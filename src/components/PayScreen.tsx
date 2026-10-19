@@ -94,8 +94,12 @@ export function PayScreen({
     if (!recipient || !amount) { toast.error('Fill in recipient and amount'); return }
     const id = currentIntentId; setLockedIntentId(id); setSingleResult(null); setIsSinglePaying(true)
     const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600)
+    // Pre-fetch fee data so wallets that can't estimate fees (e.g. OKX on Arc Testnet) still show a valid fee
+    const fees = await publicClient.estimateFeesPerGas().catch(() => null)
+    const mfpg = fees?.maxFeePerGas ?? fees?.gasPrice ?? 30_000_000_000n
+    const mpfpg = fees?.maxPriorityFeePerGas ?? 0n
     try {
-      const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt], gas: 150_000n })
+      const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt], gas: 150_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status === 'success') {
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
@@ -130,13 +134,18 @@ export function PayScreen({
       | { sent: true; index: number; hash: `0x${string}` }
       | { sent: false; index: number; status: 'CANCELLED' | 'NOT_SENT'; reason?: string }
 
+    // Pre-fetch fee data once for all 5 storm attempts
+    const stormFees = await publicClient.estimateFeesPerGas().catch(() => null)
+    const stormMfpg = stormFees?.maxFeePerGas ?? stormFees?.gasPrice ?? 30_000_000_000n
+    const stormMpfpg = stormFees?.maxPriorityFeePerGas ?? 0n
+
     const sendOutcomes: SendOutcome[] = []
     let cancelledAt: number | null = null
 
     for (let i = 0; i < 5; i++) {
       if (cancelledAt !== null) { sendOutcomes.push({ sent: false, index: i + 1, status: 'NOT_SENT' }); continue }
       try {
-        const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, rawAmount, expiresAt], gas: 150_000n })
+        const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, rawAmount, expiresAt], gas: 150_000n, maxFeePerGas: stormMfpg, maxPriorityFeePerGas: stormMpfpg })
         sendOutcomes.push({ sent: true, index: i + 1, hash })
       } catch (err) {
         const msg = (err as Error)?.message ?? ''

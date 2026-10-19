@@ -182,12 +182,18 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
     if (totalPaid === undefined) { toast.error('Vault data not loaded yet'); return }
     setIsClosingOut(true); setCloseOutHashes({})
     try {
+      // Pre-fetch fee data so wallets that can't auto-estimate (e.g. OKX on Arc
+      // Testnet) still see a valid network fee.
+      const fees = await publicClient.estimateFeesPerGas()
+      const mfpg = fees.maxFeePerGas ?? fees.gasPrice ?? 30_000_000_000n
+      const mpfpg = fees.maxPriorityFeePerGas ?? 0n
+
       toast.info('Step 1/2: Setting budget to totalPaid…')
-      const h1 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'setBudget', args: [totalPaid], gas: 100_000n })
+      const h1 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'setBudget', args: [totalPaid], gas: 120_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg })
       await publicClient.waitForTransactionReceipt({ hash: h1 })
       setCloseOutHashes(h => ({ ...h, setBudget: h1 })); toast.success('Budget locked')
       toast.info('Step 2/2: Withdrawing unspent USDC…')
-      const h2 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'withdrawUnspent', gas: 100_000n })
+      const h2 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'withdrawUnspent', gas: 120_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg })
       await publicClient.waitForTransactionReceipt({ hash: h2 })
       setCloseOutHashes(h => ({ ...h, withdraw: h2 })); toast.success('Close out complete!')
       refetchAll()

@@ -108,11 +108,39 @@ export default function App() {
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
     setIsCreating(true)
     try {
+      // Pre-estimate gas so wallets that can't auto-estimate (e.g. OKX on Arc
+      // Testnet) still see a valid network fee. Add 20 % buffer.
+      let gasLimit = 800_000n
+      let feeData: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint; gasPrice?: bigint } = {}
+      try {
+        const [estimated, fees] = await Promise.all([
+          publicClient.estimateContractGas({
+            address: FACTORY_ADDRESS,
+            abi: FACTORY_ABI,
+            functionName: 'createVault',
+            account: address,
+          }),
+          publicClient.estimateFeesPerGas(),
+        ])
+        gasLimit = (estimated * 120n) / 100n  // +20 %
+        feeData = fees.maxFeePerGas != null
+          ? { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas ?? 0n }
+          : { maxFeePerGas: fees.gasPrice ?? 30_000_000_000n, maxPriorityFeePerGas: 0n }
+      } catch (estErr) {
+        // Estimation itself reverted — decode and show reason, abort
+        const msg = (estErr as Error)?.message ?? ''
+        toast.error(`Cannot create vault: ${msg.slice(0, 120)}`)
+        setIsCreating(false)
+        return
+      }
+
       const hash = await walletClient.writeContract({
         address: FACTORY_ADDRESS,
         abi: FACTORY_ABI,
         functionName: 'createVault',
-        gas: 3_000_000n,
+        gas: gasLimit,
+        maxFeePerGas: feeData.maxFeePerGas,
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
       })
       toast.info('Creating vault…')
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
