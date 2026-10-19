@@ -4,11 +4,13 @@
 
 ---
 
-## Deployed Contract
+## Deployed Contracts
 
-| Network      | Address                                      | Explorer |
-|---|---|---|
-| Arc Testnet  | `0xbd4864d24de630acb4455448f2b84206968720c4` | [View on ArcScan](https://explorer.testnet.arc.io/address/0xbd4864d24de630acb4455448f2b84206968720c4) |
+| Contract | Network | Address | Explorer |
+|---|---|---|---|
+| OncePayoutVaultFactory | Arc Testnet | `0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7` | [View on ArcScan](https://explorer.testnet.arc.io/address/0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7) |
+
+Each user deploys their own `OncePayoutVault` through the factory. No vault address is hardcoded — call `createVault()` or connect your wallet in the app.
 
 ---
 

@@ -1,0 +1,96 @@
+{
+  "contractAddress": "0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7",
+  "network": "ARC-TESTNET",
+  "deployerWalletId": "3c2464b2-8369-52e2-a782-800bbeca5396",
+  "contract_code_path": "/home/user/app/contracts/OncePayoutVaultFactory.sol",
+  "contract_compiled_code_path": "/home/user/app/contracts/out/OncePayoutVaultFactory.sol/OncePayoutVaultFactory.json",
+  "contract_network_and_links": {
+    "Arc Testnet": "https://explorer.testnet.arc.io/address/0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7"
+  },
+  "contract_deployments": [
+    {
+      "chain": "Arc Testnet",
+      "address": "0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7",
+      "explorerUrl": "https://explorer.testnet.arc.io/address/0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7",
+      "txHash": "0x5ff975a43360091c9b93faeb0f397473c26c1405ca70334ee4a2a5f74f51ddb4",
+      "deployedAt": "2026-10-19T19:46:05.337Z"
+    }
+  ],
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [
+        {
+          "name": "_usdc",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "createVault",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "vault",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "getVaults",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address[]",
+          "internalType": "address[]"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "usdc",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "event",
+      "name": "VaultCreated",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "vault",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    }
+  ]
+}

@@ -2,6 +2,10 @@
  * Once Payout Vault — chain configuration.
  * Change ACTIVE_CHAIN to switch between testnet and mainnet.
  * Never import chain IDs, RPC URLs, or USDC addresses from memory — read them here.
+ *
+ * VAULT_ADDRESS is NOT hardcoded here. Each user deploys their own vault through
+ * the factory. The active vault address comes from the URL (?vault=0x...) or
+ * is chosen from the factory's getVaults() result after connecting.
  */
 
 import { arcTestnet, arc } from 'viem/chains'
@@ -21,8 +25,10 @@ export const CHAIN_ID = CHAIN.id as number  // 5042002 on testnet
 export const USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as const
 export const USDC_DECIMALS = 6
 
-// ─── Contract ──────────────────────────────────────────────────────────────────
-export const VAULT_ADDRESS = '0xbd4864d24de630acb4455448f2b84206968720c4' as `0x${string}`
+// ─── Factory ───────────────────────────────────────────────────────────────────
+// Deployed on Arc Testnet. Update this when redeploying.
+// No vault address is hardcoded — vaults are created per user via createVault().
+export const FACTORY_ADDRESS = '0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7' as `0x${string}`
 
 // ─── Explorer ──────────────────────────────────────────────────────────────────
 export const EXPLORER_BASE =
