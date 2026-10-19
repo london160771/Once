@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react'
 import { useAccount, useSwitchChain, usePublicClient, useWalletClient } from 'wagmi'
-import { keccak256, encodeAbiParameters, parseAbiParameters, decodeErrorResult } from 'viem'
+import { keccak256, encodeAbiParameters, parseAbiParameters } from 'viem'
 import { Loader2, Zap, RefreshCw, CheckCircle2, XCircle, Copy, ExternalLink, MinusCircle } from 'lucide-react'
 import { CHAIN_ID, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
-import { formatUsdc, parseUsdc, parseRevertReason, getFeeParams } from '../utils'
+import { formatUsdc, parseUsdc, parseRevertReason, getFeeParams, decodeOnchainRevert } from '../utils'
 import { toast } from 'sonner'
 
 const glass = {
@@ -20,21 +20,6 @@ const glass = {
     border: '1px solid var(--border)',
     borderRadius: '16px',
   } as React.CSSProperties,
-}
-
-function decodeRevertReason(err: unknown): string {
-  const msg = (err as Error)?.message ?? String(err)
-  for (const code of ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER']) {
-    if (msg.includes(code)) return code
-  }
-  const data = (err as { data?: `0x${string}` })?.data
-  if (data && data !== '0x') {
-    try {
-      const decoded = decodeErrorResult({ abi: VAULT_ABI, data })
-      return decoded.errorName
-    } catch { /* fall through */ }
-  }
-  return parseRevertReason(err)
 }
 
 export type AttemptStatus = 'PAID' | 'REFUSED' | 'CANCELLED' | 'NOT_SENT'
@@ -79,15 +64,10 @@ export function PayScreen({
     recipient || '0x0000000000000000000000000000000000000000', amount || '0', nonce,
   )
 
-  // Replay the tx calldata with eth_call at 'latest' (Arc testnet doesn't retain
-  // historical state at the blockNumber level via RPC, so 'latest' is more reliable).
-  async function decodeOnchainRevert(hash: `0x${string}`): Promise<string> {
+  // Wrapper: calls the shared helper from utils.ts
+  async function replayRevert(hash: `0x${string}`): Promise<string> {
     if (!publicClient) return 'REVERTED'
-    try {
-      const tx = await publicClient.getTransaction({ hash })
-      await publicClient.call({ to: tx.to ?? undefined, data: tx.input, account: tx.from })
-      return 'REVERTED'
-    } catch (revertErr) { return decodeRevertReason(revertErr) }
+    return decodeOnchainRevert(hash, VAULT_ABI, publicClient, vaultAddress)
   }
 
   const handlePay = async () => {
@@ -108,7 +88,7 @@ export function PayScreen({
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
         toast.success('Payment confirmed'); onActivity()
       } else {
-        const reason = await decodeOnchainRevert(hash)
+        const reason = await replayRevert(hash)
         setSingleResult({ index: 1, status: 'REFUSED', reason, txHash: hash, blockNumber: receipt.blockNumber })
         toast.error(`Refused: ${reason}`)
       }
@@ -118,7 +98,7 @@ export function PayScreen({
         setSingleResult({ index: 1, status: 'CANCELLED' }); toast.info('Cancelled')
       } else {
         const hash = (err as { transactionHash?: `0x${string}` })?.transactionHash
-        const reason = decodeRevertReason(err)
+        const reason = parseRevertReason(err)
         setSingleResult({ index: 1, status: 'REFUSED', reason, txHash: hash })
         toast.error(`Refused: ${reason}`)
       }
@@ -164,7 +144,7 @@ export function PayScreen({
         } else {
           const hash = (err as { transactionHash?: `0x${string}` })?.transactionHash
           if (hash) sendOutcomes.push({ sent: true, index: i + 1, hash })
-          else sendOutcomes.push({ sent: false, index: i + 1, status: 'NOT_SENT', reason: decodeRevertReason(err) })
+          else sendOutcomes.push({ sent: false, index: i + 1, status: 'NOT_SENT', reason: parseRevertReason(err) })
         }
       }
     }
@@ -174,9 +154,9 @@ export function PayScreen({
       try {
         const receipt = await publicClient.waitForTransactionReceipt({ hash: o.hash })
         if (receipt.status === 'success') return { index: o.index, status: 'PAID' as const, txHash: o.hash, blockNumber: receipt.blockNumber }
-        const reason = await decodeOnchainRevert(o.hash)
+        const reason = await replayRevert(o.hash)
         return { index: o.index, status: 'REFUSED' as const, reason, txHash: o.hash, blockNumber: receipt.blockNumber }
-      } catch (err) { return { index: o.index, status: 'REFUSED' as const, reason: decodeRevertReason(err), txHash: o.hash } }
+      } catch (err) { return { index: o.index, status: 'REFUSED' as const, reason: parseRevertReason(err), txHash: o.hash } }
     }))
 
     const receiptMap = new Map(receiptResults.map(r => [r.index, r]))

@@ -84,12 +84,14 @@ Three screens, accessible via tab bar:
 Both contracts are verified on Arc Testnet (Blockscout). Rerun these commands after any redeployment — they work on mainnet too by changing `--chain-id` and `--verifier-url`.
 
 ```bash
-# Verify OncePayoutVaultFactory (no constructor args)
+# Verify OncePayoutVaultFactory (takes address _usdc in constructor)
 forge verify-contract <FACTORY_ADDRESS> \
   contracts/OncePayoutVaultFactory.sol:OncePayoutVaultFactory \
   --chain-id 5042002 \
   --verifier blockscout \
   --verifier-url https://explorer.testnet.arc.io/api/ \
+  --constructor-args $(cast abi-encode "constructor(address)" \
+      0x3600000000000000000000000000000000000000) \
   --watch
 
 # Verify OncePayoutVault (pass the usdc + owner constructor args)

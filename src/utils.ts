@@ -1,6 +1,108 @@
-import type { PublicClient } from 'viem'
+import type { PublicClient, Abi } from 'viem'
+import { BaseError, decodeErrorResult, decodeFunctionData } from 'viem'
 import { MIN_BASE_FEE_GWEI } from './onchain-config'
 import { USDC_DECIMALS } from './onchain-config'
+
+const KNOWN_ERRORS = ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER'] as const
+
+/**
+ * Shared onchain revert decoder used by PayScreen and ActivityScreen.
+ *
+ * Decode order:
+ *   (a) Walk the viem BaseError chain with .walk() to find the innermost
+ *       error that carries `data` (ContractFunctionRevertedError /
+ *       RawContractError) and ABI-decode with the vault ABI.
+ *   (b) Scan the error message string for known error names.
+ *   (c) Replay the tx calldata with eth_call at 'latest' — then ABI-decode
+ *       the revert data from that call.
+ *   (d) paidIntents(intentId) fallback: if the tx input is a pay() call,
+ *       read paidIntents on-chain; if true → DUPLICATE_INTENT.
+ *   (e) REVERTED — never FAILED.
+ *
+ * @param hash     Tx hash to decode (revert expected).
+ * @param abi      Vault ABI (Abi type).
+ * @param client   viem PublicClient for the target chain.
+ * @param vault    Vault contract address (for paidIntents fallback).
+ * @param apiReason Optional revert_reason string from Blockscout.
+ */
+export async function decodeOnchainRevert(
+  hash: `0x${string}`,
+  abi: Abi,
+  client: PublicClient,
+  vault: `0x${string}`,
+  apiReason?: string | null,
+): Promise<string> {
+  // (a-pre) Explorer reason string
+  if (apiReason) {
+    for (const c of KNOWN_ERRORS) { if (apiReason.includes(c)) return c }
+    if (apiReason.startsWith('0x')) {
+      try { return decodeErrorResult({ abi, data: apiReason as `0x${string}` }).errorName } catch { /* fall */ }
+    }
+  }
+
+  // Helper: extract revert data from a viem error via BaseError.walk()
+  function extractRevertData(err: unknown): `0x${string}` | null {
+    if (!(err instanceof BaseError)) return null
+    // walk() finds the first matching node in the error chain
+    const inner = err.walk(e => {
+      const candidate = e as { data?: unknown }
+      return typeof candidate.data === 'string' && candidate.data.startsWith('0x') && candidate.data.length > 2
+    })
+    if (!inner) return null
+    const d = (inner as { data?: string }).data
+    return (d && d.startsWith('0x') && d.length > 2) ? d as `0x${string}` : null
+  }
+
+  // Helper: decode an ABI error from raw 0x data
+  function decodeAbiError(data: `0x${string}`): string | null {
+    try { return decodeErrorResult({ abi, data }).errorName } catch { return null }
+  }
+
+  // Helper: scan error message for known names
+  function scanMessage(err: unknown): string | null {
+    const msg = (err as Error)?.message ?? String(err)
+    for (const c of KNOWN_ERRORS) { if (msg.includes(c)) return c }
+    return null
+  }
+
+  // (b+c) Replay with eth_call at 'latest'
+  try {
+    const tx = await client.getTransaction({ hash })
+    await client.call({ to: tx.to ?? undefined, data: tx.input, account: tx.from })
+    // No revert — state changed; fall through to paidIntents
+  } catch (revertErr) {
+    // (b) scan message
+    const fromMsg = scanMessage(revertErr)
+    if (fromMsg) return fromMsg
+
+    // (a via walk) extract data from BaseError chain
+    const data = extractRevertData(revertErr)
+    if (data) {
+      const decoded = decodeAbiError(data)
+      if (decoded) return decoded
+    }
+
+    // (c) data on raw err object (some viem versions put it top-level)
+    const rawData = (revertErr as { data?: `0x${string}` })?.data
+    if (rawData && rawData !== '0x') {
+      const decoded = decodeAbiError(rawData)
+      if (decoded) return decoded
+    }
+  }
+
+  // (d) paidIntents fallback
+  try {
+    const tx = await client.getTransaction({ hash })
+    const decoded = decodeFunctionData({ abi, data: tx.input })
+    if (decoded.functionName === 'pay') {
+      const intentId = (decoded.args as [`0x${string}`, ...unknown[]])[0]
+      const isPaid = await client.readContract({ address: vault, abi, functionName: 'paidIntents', args: [intentId] })
+      if (isPaid) return 'DUPLICATE_INTENT'
+    }
+  } catch { /* leave as REVERTED */ }
+
+  return 'REVERTED'
+}
 
 const ONE_GWEI = 1_000_000_000n
 const MIN_BASE_FEE_WEI = MIN_BASE_FEE_GWEI * ONE_GWEI  // 20 gwei in wei
@@ -97,5 +199,5 @@ export function parseRevertReason(err: unknown): string {
   }
   if (msg.toLowerCase().includes('user rejected')) return 'CANCELLED'
   if (msg.toLowerCase().includes('insufficient')) return 'INSUFFICIENT_FUNDS'
-  return 'FAILED'
+  return 'REVERTED'
 }
