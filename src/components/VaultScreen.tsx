@@ -1,12 +1,67 @@
-import { useState } from 'react'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useSwitchChain, useWalletClient, usePublicClient } from 'wagmi'
-import { erc20Abi } from 'viem'
-import { Loader2, ShieldCheck, PiggyBank, Target, TrendingUp, ArrowDownToLine, PackageCheck } from 'lucide-react'
+/**
+ * VaultScreen — deposit, set budget, withdraw, and close out.
+ *
+ * Bug fixes applied:
+ * 1. useEffect hooks keyed on receipt success so each fires exactly once.
+ *    No side-effects in the render body.
+ * 2. Owner address read from chain; owner badge shown; owner-only buttons
+ *    disabled for non-owners with a clear tooltip.
+ * 3. All write errors decoded to human-readable reason codes and shown as
+ *    toast.error with consistent messages.
+ */
+
+import { useState, useEffect } from 'react'
+import {
+  useAccount, useReadContract, useWriteContract,
+  useWaitForTransactionReceipt, useSwitchChain,
+  useWalletClient, usePublicClient,
+} from 'wagmi'
+import { erc20Abi, decodeErrorResult } from 'viem'
+import {
+  Loader2, ShieldCheck, PiggyBank, Target, TrendingUp,
+  ArrowDownToLine, PackageCheck, ExternalLink, BadgeCheck, BadgeX,
+} from 'lucide-react'
 import { TokenUSDC } from '@web3icons/react'
 import { VAULT_ADDRESS, USDC_ADDRESS, CHAIN_ID, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
-import { formatUsdc, parseUsdc } from '../utils'
+import { formatUsdc, parseUsdc, formatAddress } from '../utils'
 import { toast } from 'sonner'
+
+// ─── Error decoding ────────────────────────────────────────────────────────────
+
+const FRIENDLY: Record<string, string> = {
+  OwnableUnauthorizedAccount: 'Only the vault owner can do this',
+  NOT_PAYER:         'Caller is not an allowed payer',
+  OVER_BUDGET:       'Amount exceeds the approved budget',
+  DUPLICATE_INTENT:  'This intent was already paid',
+  INTENT_EXPIRED:    'The intent has expired',
+}
+
+function decodeWriteError(err: unknown): string {
+  const msg = (err as Error)?.message ?? String(err)
+
+  // User cancelled in wallet
+  if (msg.toLowerCase().includes('user rejected') || msg.toLowerCase().includes('user denied')) {
+    return 'CANCELLED'
+  }
+
+  // Custom error codes in message
+  for (const code of Object.keys(FRIENDLY)) {
+    if (msg.includes(code)) return FRIENDLY[code] ?? code
+  }
+
+  // ABI-decoded custom error from revert data
+  const data = (err as { data?: `0x${string}` })?.data
+  if (data && data !== '0x') {
+    try {
+      const decoded = decodeErrorResult({ abi: VAULT_ABI, data })
+      return FRIENDLY[decoded.errorName] ?? decoded.errorName
+    } catch { /* fall through */ }
+  }
+
+  // Trim long Solidity error strings
+  return msg.length > 100 ? msg.slice(0, 100) + '…' : msg
+}
 
 const glass = {
   card: {
@@ -34,6 +89,12 @@ export function VaultScreen() {
   const [budgetAmount, setBudgetAmount] = useState('')
 
   // ── Contract reads ──────────────────────────────────────────────────────────
+
+  const { data: vaultOwner } = useReadContract({
+    address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'owner', chainId: CHAIN_ID,
+  })
+  const isOwner = !!(address && vaultOwner && address.toLowerCase() === (vaultOwner as string).toLowerCase())
+
   const { data: vaultBalance, refetch: refetchBalance } = useReadContract({
     address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf',
     args: [VAULT_ADDRESS], chainId: CHAIN_ID,
@@ -55,11 +116,15 @@ export function VaultScreen() {
   const refetchAll = () => { refetchBalance(); refetchBudget(); refetchPaid() }
 
   // ── Approve + Fund ──────────────────────────────────────────────────────────
-  const { writeContract: approve, data: approveHash, isPending: approvePending } = useWriteContract()
+  // Two-step: approve USDC spend, then call vault.fund().
+  // All side-effects are in useEffect to prevent double-firing on re-render.
+
+  const { writeContract: approve, data: approveHash, isPending: approvePending, error: approveError } = useWriteContract()
   const { isLoading: approveConfirming, isSuccess: approveSuccess } = useWaitForTransactionReceipt({ hash: approveHash })
-  const { writeContract: fund, data: fundHash, isPending: fundPending } = useWriteContract()
+  const { writeContract: fund, data: fundHash, isPending: fundPending, error: fundError } = useWriteContract()
   const { isLoading: fundConfirming, isSuccess: fundSuccess } = useWaitForTransactionReceipt({ hash: fundHash })
 
+  // pendingFundAmount is set when approve is submitted; cleared once fund fires.
   const [pendingFundAmount, setPendingFundAmount] = useState<bigint | null>(null)
 
   const handleFund = () => {
@@ -68,19 +133,48 @@ export function VaultScreen() {
     const raw = parseUsdc(depositAmount)
     if (!raw) return
     setPendingFundAmount(raw)
-    approve({ address: USDC_ADDRESS, abi: erc20Abi, functionName: 'approve', args: [VAULT_ADDRESS, raw] })
-  }
-  if (approveSuccess && pendingFundAmount) {
-    fund({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'fund', args: [pendingFundAmount] })
-    setPendingFundAmount(null)
-  }
-  if (fundSuccess) {
-    refetchAll()
-    if (fundHash) toast.success('Deposited!')
+    approve({
+      address: USDC_ADDRESS, abi: erc20Abi, functionName: 'approve',
+      args: [VAULT_ADDRESS, raw],
+    })
   }
 
+  // Fire fund() exactly once after approve confirms
+  useEffect(() => {
+    if (approveSuccess && pendingFundAmount) {
+      fund({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'fund', args: [pendingFundAmount] })
+      setPendingFundAmount(null)
+    }
+  }, [approveSuccess, pendingFundAmount]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refetch + toast exactly once after fund confirms
+  useEffect(() => {
+    if (fundSuccess && fundHash) {
+      refetchAll()
+      setDepositAmount('')
+      toast.success('Deposited successfully!')
+    }
+  }, [fundSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Error toasts
+  useEffect(() => {
+    if (approveError) {
+      const reason = decodeWriteError(approveError)
+      if (reason !== 'CANCELLED') toast.error(`Approve failed: ${reason}`)
+    }
+  }, [approveError])
+
+  useEffect(() => {
+    if (fundError) {
+      const reason = decodeWriteError(fundError)
+      if (reason !== 'CANCELLED') toast.error(`Deposit failed: ${reason}`)
+      setPendingFundAmount(null)
+    }
+  }, [fundError])
+
   // ── Set Budget ──────────────────────────────────────────────────────────────
-  const { writeContract: setBudget, data: budgetHash, isPending: budgetPending } = useWriteContract()
+
+  const { writeContract: setBudget, data: budgetHash, isPending: budgetPending, error: budgetError } = useWriteContract()
   const { isLoading: budgetConfirming, isSuccess: budgetSuccess } = useWaitForTransactionReceipt({ hash: budgetHash })
 
   const handleSetBudget = () => {
@@ -89,13 +183,25 @@ export function VaultScreen() {
     const raw = parseUsdc(budgetAmount)
     setBudget({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'setBudget', args: [raw] })
   }
-  if (budgetSuccess) {
-    refetchAll()
-    toast.success('Budget updated!')
-  }
+
+  useEffect(() => {
+    if (budgetSuccess) {
+      refetchAll()
+      setBudgetAmount('')
+      toast.success('Budget updated!')
+    }
+  }, [budgetSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (budgetError) {
+      const reason = decodeWriteError(budgetError)
+      if (reason !== 'CANCELLED') toast.error(`Set budget failed: ${reason}`)
+    }
+  }, [budgetError])
 
   // ── Withdraw Unspent ────────────────────────────────────────────────────────
-  const { writeContract: withdraw, data: withdrawHash, isPending: withdrawPending } = useWriteContract()
+
+  const { writeContract: withdraw, data: withdrawHash, isPending: withdrawPending, error: withdrawError } = useWriteContract()
   const { isLoading: withdrawConfirming, isSuccess: withdrawSuccess } = useWaitForTransactionReceipt({ hash: withdrawHash })
 
   const handleWithdraw = () => {
@@ -103,13 +209,23 @@ export function VaultScreen() {
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
     withdraw({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'withdrawUnspent' })
   }
-  if (withdrawSuccess) {
-    refetchAll()
-    if (withdrawHash) toast.success('Unspent funds withdrawn!')
-  }
+
+  useEffect(() => {
+    if (withdrawSuccess) {
+      refetchAll()
+      toast.success('Unspent funds withdrawn!')
+    }
+  }, [withdrawSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (withdrawError) {
+      const reason = decodeWriteError(withdrawError)
+      if (reason !== 'CANCELLED') toast.error(`Withdraw failed: ${reason}`)
+    }
+  }, [withdrawError])
 
   // ── Close Out: setBudget(totalPaid) then withdrawUnspent ────────────────────
-  // Runs as two sequential real transactions so both appear onchain.
+
   const [isClosingOut, setIsClosingOut] = useState(false)
   const [closeOutHashes, setCloseOutHashes] = useState<{ setBudget?: `0x${string}`; withdraw?: `0x${string}` }>({})
 
@@ -122,34 +238,27 @@ export function VaultScreen() {
     setCloseOutHashes({})
 
     try {
-      // Step 1: setBudget(totalPaid) — locks budget down to what was already paid
       toast.info('Step 1/2: Setting budget to totalPaid…')
       const setBudgetHash = await walletClient.writeContract({
-        address: VAULT_ADDRESS,
-        abi: VAULT_ABI,
-        functionName: 'setBudget',
-        args: [totalPaid],
-        gas: 100_000n,
+        address: VAULT_ADDRESS, abi: VAULT_ABI,
+        functionName: 'setBudget', args: [totalPaid], gas: 100_000n,
       })
       await publicClient.waitForTransactionReceipt({ hash: setBudgetHash })
       setCloseOutHashes(h => ({ ...h, setBudget: setBudgetHash }))
       toast.success('Budget locked to totalPaid')
 
-      // Step 2: withdrawUnspent — pulls all funds above the locked budget
       toast.info('Step 2/2: Withdrawing unspent USDC…')
-      const withdrawHash = await walletClient.writeContract({
-        address: VAULT_ADDRESS,
-        abi: VAULT_ABI,
-        functionName: 'withdrawUnspent',
-        gas: 100_000n,
+      const wHash = await walletClient.writeContract({
+        address: VAULT_ADDRESS, abi: VAULT_ABI,
+        functionName: 'withdrawUnspent', gas: 100_000n,
       })
-      await publicClient.waitForTransactionReceipt({ hash: withdrawHash })
-      setCloseOutHashes(h => ({ ...h, withdraw: withdrawHash }))
+      await publicClient.waitForTransactionReceipt({ hash: wHash })
+      setCloseOutHashes(h => ({ ...h, withdraw: wHash }))
       toast.success('Close out complete — unspent USDC returned!')
       refetchAll()
     } catch (err) {
-      const msg = (err as Error)?.message ?? 'Unknown error'
-      toast.error(`Close out failed: ${msg.slice(0, 80)}`)
+      const reason = decodeWriteError(err)
+      if (reason !== 'CANCELLED') toast.error(`Close out failed: ${reason}`)
     } finally {
       setIsClosingOut(false)
     }
@@ -161,6 +270,37 @@ export function VaultScreen() {
 
   return (
     <div className="space-y-4">
+
+      {/* Owner badge */}
+      {isConnected && vaultOwner && (
+        <div
+          className="flex items-center justify-between rounded-2xl px-4 py-3"
+          style={{
+            background: isOwner ? 'rgba(26,128,71,0.06)' : 'rgba(107,101,128,0.06)',
+            border: `1px solid ${isOwner ? 'rgba(26,128,71,0.18)' : 'var(--border)'}`,
+          }}
+        >
+          <div className="min-w-0">
+            <p className="text-xs font-medium" style={{ color: 'var(--muted)' }}>Vault owner</p>
+            <p className="mono mt-0.5 truncate text-xs" style={{ color: 'var(--ink-2)' }}>
+              {formatAddress(vaultOwner as string)}
+            </p>
+          </div>
+          <div
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
+            style={{
+              background: isOwner ? 'rgba(26,128,71,0.12)' : 'rgba(107,101,128,0.1)',
+              color: isOwner ? 'var(--success)' : 'var(--muted)',
+            }}
+          >
+            {isOwner
+              ? <><BadgeCheck className="size-3.5" /> Owner</>
+              : <><BadgeX className="size-3.5" /> Not owner</>
+            }
+          </div>
+        </div>
+      )}
+
       {/* Hero stats */}
       <div className="grid grid-cols-2 gap-3">
         <StatCard
@@ -227,11 +367,14 @@ export function VaultScreen() {
         {fundHash && <TxLink hash={fundHash} label="Deposit confirmed" />}
       </section>
 
-      {/* Set Budget */}
+      {/* Set Budget — owner only */}
       <section style={glass.card} className="p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <Target className="size-[18px]" style={{ color: 'var(--accent)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Set Approved Budget</span>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Target className="size-[18px]" style={{ color: 'var(--accent)' }} />
+            <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Set Approved Budget</span>
+          </div>
+          <OwnerOnly isOwner={isOwner} isConnected={isConnected} />
         </div>
         <div style={glass.inner} className="p-4">
           <input
@@ -250,20 +393,24 @@ export function VaultScreen() {
         <ActionButton
           onClick={handleSetBudget}
           loading={isSettingBudget}
-          disabled={!budgetAmount || isSettingBudget}
+          disabled={!budgetAmount || isSettingBudget || !isOwner}
           label="Set Budget"
           isConnected={isConnected}
           wrongChain={wrongChain}
           loadingLabel="Setting budget…"
+          ownerOnly={!isOwner && isConnected && !wrongChain}
         />
         {budgetHash && <TxLink hash={budgetHash} label="Budget updated" />}
       </section>
 
-      {/* Withdraw Unspent */}
+      {/* Withdraw Unspent — owner only */}
       <section style={glass.card} className="p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <ArrowDownToLine className="size-[18px]" style={{ color: 'var(--accent)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Withdraw Unspent</span>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ArrowDownToLine className="size-[18px]" style={{ color: 'var(--accent)' }} />
+            <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Withdraw Unspent</span>
+          </div>
+          <OwnerOnly isOwner={isOwner} isConnected={isConnected} />
         </div>
         <p className="mb-4 text-xs" style={{ color: 'var(--muted)' }}>
           Withdraws vault balance minus the committed-but-unpaid budget<br />
@@ -272,56 +419,61 @@ export function VaultScreen() {
         <ActionButton
           onClick={handleWithdraw}
           loading={isWithdrawing}
-          disabled={isWithdrawing}
+          disabled={isWithdrawing || (!isOwner && isConnected && !wrongChain)}
           label="Withdraw Unspent"
           isConnected={isConnected}
           wrongChain={wrongChain}
           loadingLabel="Withdrawing…"
+          ownerOnly={!isOwner && isConnected && !wrongChain}
         />
         {withdrawHash && <TxLink hash={withdrawHash} label="Withdrawn" />}
       </section>
 
-      {/* Close Out */}
+      {/* Close Out — owner only */}
       <section
-        style={{
-          ...glass.card,
-          border: '1px solid rgba(186,43,76,0.25)',
-          background: 'rgba(254,242,242,0.7)',
-        }}
+        style={{ ...glass.card, border: '1px solid rgba(186,43,76,0.25)', background: 'rgba(254,242,242,0.7)' }}
         className="p-5"
       >
-        <div className="mb-3 flex items-center gap-2">
-          <PackageCheck className="size-[18px]" style={{ color: 'var(--danger)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Close Out</span>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <PackageCheck className="size-[18px]" style={{ color: 'var(--danger)' }} />
+            <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Close Out</span>
+          </div>
+          <OwnerOnly isOwner={isOwner} isConnected={isConnected} />
         </div>
         <p className="mb-4 text-xs" style={{ color: 'var(--muted)' }}>
           Two-step atomic close: sets budget down to <span className="mono">totalPaid</span> (locking the committed amount), then withdraws all remaining USDC back to your wallet.
         </p>
         <button
           onClick={handleCloseOut}
-          disabled={isClosingOut || !isConnected || wrongChain}
+          disabled={isClosingOut || !isConnected || wrongChain || (!isOwner && isConnected && !wrongChain)}
           className="w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
           style={{ background: 'var(--danger)' }}
         >
           {!isConnected ? 'Connect Wallet'
             : wrongChain ? 'Switch to Arc Testnet'
-              : isClosingOut
-                ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Closing out…</span>
-                : 'Close Out Vault'}
+            : !isOwner ? 'Owner only'
+            : isClosingOut
+              ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Closing out…</span>
+              : 'Close Out Vault'}
         </button>
-
-        {closeOutHashes.setBudget && (
-          <TxLink hash={closeOutHashes.setBudget} label="1. Budget locked" />
-        )}
-        {closeOutHashes.withdraw && (
-          <TxLink hash={closeOutHashes.withdraw} label="2. Funds withdrawn" />
-        )}
+        {closeOutHashes.setBudget && <TxLink hash={closeOutHashes.setBudget} label="1. Budget locked" />}
+        {closeOutHashes.withdraw && <TxLink hash={closeOutHashes.withdraw} label="2. Funds withdrawn" />}
       </section>
     </div>
   )
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+function OwnerOnly({ isOwner, isConnected }: { isOwner: boolean; isConnected: boolean }) {
+  if (!isConnected || isOwner) return null
+  return (
+    <span className="rounded-full px-2 py-0.5 text-xs font-medium" style={{ background: 'rgba(107,101,128,0.1)', color: 'var(--muted)' }}>
+      Owner only
+    </span>
+  )
+}
 
 function StatCard({ icon, label, value, sub, highlight }: {
   icon: React.ReactNode
@@ -349,7 +501,7 @@ function StatCard({ icon, label, value, sub, highlight }: {
   )
 }
 
-function ActionButton({ onClick, loading, disabled, label, loadingLabel, isConnected, wrongChain }: {
+function ActionButton({ onClick, loading, disabled, label, loadingLabel, isConnected, wrongChain, ownerOnly }: {
   onClick: () => void
   loading: boolean
   disabled: boolean
@@ -357,6 +509,7 @@ function ActionButton({ onClick, loading, disabled, label, loadingLabel, isConne
   loadingLabel: string
   isConnected: boolean
   wrongChain: boolean
+  ownerOnly?: boolean
 }) {
   return (
     <button
@@ -365,11 +518,14 @@ function ActionButton({ onClick, loading, disabled, label, loadingLabel, isConne
       className="mt-4 w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
       style={{ background: 'var(--accent)' }}
     >
-      {!isConnected ? 'Connect Wallet' : wrongChain ? 'Switch to Arc Testnet' : loading ? (
-        <span className="flex items-center justify-center gap-2">
-          <Loader2 className="size-4 animate-spin" />{loadingLabel}
-        </span>
-      ) : label}
+      {!isConnected ? 'Connect Wallet'
+        : wrongChain ? 'Switch to Arc Testnet'
+        : ownerOnly ? 'Owner only'
+        : loading ? (
+          <span className="flex items-center justify-center gap-2">
+            <Loader2 className="size-4 animate-spin" />{loadingLabel}
+          </span>
+        ) : label}
     </button>
   )
 }
@@ -383,7 +539,7 @@ function TxLink({ hash, label }: { hash: string; label: string }) {
       className="mt-2 inline-flex items-center gap-1 text-xs font-medium"
       style={{ color: 'var(--success)' }}
     >
-      {label} ↗
+      {label} <ExternalLink className="size-3" />
     </a>
   )
 }

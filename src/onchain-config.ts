@@ -22,7 +22,7 @@ export const USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as cons
 export const USDC_DECIMALS = 6
 
 // ─── Contract ──────────────────────────────────────────────────────────────────
-export const VAULT_ADDRESS = '0x781cb1b21aca681e8320ae8e6960016e68e93920' as `0x${string}`
+export const VAULT_ADDRESS = '0xbd4864d24de630acb4455448f2b84206968720c4' as `0x${string}`
 
 // ─── Explorer ──────────────────────────────────────────────────────────────────
 export const EXPLORER_BASE =

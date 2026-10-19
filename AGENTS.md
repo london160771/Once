@@ -4,7 +4,8 @@
 
 | Contract | Network | Address | Explorer |
 |---|---|---|---|
-| OncePayoutVault | Arc Testnet | `0x781cb1b21aca681e8320ae8e6960016e68e93920` | https://explorer.testnet.arc.io/address/0x781cb1b21aca681e8320ae8e6960016e68e93920 |
+| OncePayoutVault (v1, wrong owner) | Arc Testnet | `0x781cb1b21aca681e8320ae8e6960016e68e93920` | https://explorer.testnet.arc.io/address/0x781cb1b21aca681e8320ae8e6960016e68e93920 |
+| OncePayoutVault (v2, owner = 0xbAbDFEF...9167589) | Arc Testnet | `0xbd4864d24de630acb4455448f2b84206968720c4` | https://explorer.testnet.arc.io/address/0xbd4864d24de630acb4455448f2b84206968720c4 |
 
 ## USDC on Arc Testnet
 - Address: `0x3600000000000000000000000000000000000000`
