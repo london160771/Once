@@ -4,28 +4,31 @@
  * Per-user vault flow:
  * 1. User connects wallet.
  * 2. App reads getVaults(connectedWallet) from the factory.
- * 3. No vaults → "Create my vault" button → calls createVault(), waits for
- *    receipt, extracts vault address from logs, selects it.
- * 4. One or more vaults → vault picker dropdown in the header.
- * 5. Selected vault is persisted in the URL (?vault=0x...) so shareable
- *    read-only links work without a wallet.
- * 6. All three screens receive the selected vault address as a prop.
+ * 3. No vaults → "Create my vault" button.
+ * 4. One or more vaults → vault picker; selected vault in URL (?vault=0x...).
+ * 5. ?vault= in URL without a wallet → read-only mode with banner.
  *
- * No vault address is hardcoded here or in onchain-config.ts.
+ * Single source of truth for wallet state: wagmi useAccount().status.
+ * watchAccount re-runs vault list on account/chain change.
  */
 
 import { useState, useEffect, useCallback } from 'react'
 import { ConnectKitButton } from 'connectkit'
-import { useAccount, usePublicClient, useWalletClient, useReadContract, useSwitchChain } from 'wagmi'
+import {
+  useAccount, usePublicClient, useWalletClient,
+  useReadContract, useSwitchChain,
+} from 'wagmi'
+import { watchAccount } from '@wagmi/core'
 import { decodeEventLog, type Log } from 'viem'
-import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink } from 'lucide-react'
+import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, Eye } from 'lucide-react'
 import { VaultScreen } from './components/VaultScreen'
 import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
-import { FACTORY_ADDRESS, CHAIN_ID, EXPLORER_BASE, buildAddressUrl } from './onchain-config'
+import { FACTORY_ADDRESS, CHAIN_ID, buildAddressUrl } from './onchain-config'
 import { FACTORY_ABI } from './factory-abi'
 import { formatAddress, getFeeParams } from './utils'
 import { toast } from 'sonner'
+import { wagmiConfig } from './wagmi-config'
 
 type Tab = 'vault' | 'pay' | 'activity'
 
@@ -53,7 +56,12 @@ function setVaultInUrl(addr: `0x${string}`) {
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const { address, chainId, isConnected } = useAccount()
+  // ── Single source of truth: wagmi useAccount ─────────────────────────────
+  const { address, chainId, status } = useAccount()
+  const isConnected   = status === 'connected'
+  const isReconnecting = status === 'connecting' || status === 'reconnecting'
+  const isDisconnected = status === 'disconnected'
+
   const { switchChain } = useSwitchChain()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
   const { data: walletClient } = useWalletClient({ chainId: CHAIN_ID })
@@ -66,14 +74,12 @@ export default function App() {
   // Selected vault — initialise from URL if present
   const [selectedVault, setSelectedVault] = useState<`0x${string}` | null>(getVaultFromUrl)
   const [isPickerOpen, setIsPickerOpen] = useState(false)
-
-  // Factory: createVault state
   const [isCreating, setIsCreating] = useState(false)
 
   const triggerActivity = () => setActivityTrigger(n => n + 1)
   const handleStormResults = (results: AttemptResult[]) => { setStormResults(results); triggerActivity() }
 
-  // ── Read vaults for the connected wallet ─────────────────────────────────────
+  // ── Read vaults for the connected wallet ─────────────────────────────────
 
   const { data: ownedVaults, refetch: refetchVaults } = useReadContract({
     address: FACTORY_ADDRESS,
@@ -81,18 +87,38 @@ export default function App() {
     functionName: 'getVaults',
     args: [address ?? '0x0000000000000000000000000000000000000000'],
     chainId: CHAIN_ID,
-    query: { enabled: !!address },
+    query: { enabled: isConnected && !!address },
   })
 
   const vaultList = (ownedVaults as `0x${string}`[] | undefined) ?? []
 
+  // ── React to wallet account / chain changes (watchAccount) ──────────────
+  useEffect(() => {
+    const unwatch = watchAccount(wagmiConfig, {
+      onChange(newAccount) {
+        // Account changed or disconnected — reload vault list and clear storm
+        if (newAccount.address !== address) {
+          setStormResults([])
+          // Don't clear selectedVault — keep read-only view if URL has one
+          void refetchVaults()
+        }
+      },
+    })
+    return unwatch
+  }, [address, refetchVaults])
+
   // Auto-select the first vault when the list loads and nothing is selected
   useEffect(() => {
-    if (selectedVault) return   // URL or already chosen
-    if (vaultList.length > 0) {
-      selectVault(vaultList[vaultList.length - 1]) // pick most recently created
-    }
+    if (selectedVault) return
+    if (vaultList.length > 0) selectVault(vaultList[vaultList.length - 1])
   }, [vaultList.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When user disconnects, deselect vault ONLY if there's no ?vault= in the URL
+  useEffect(() => {
+    if (isDisconnected && !getVaultFromUrl()) {
+      setSelectedVault(null)
+    }
+  }, [isDisconnected])
 
   const selectVault = useCallback((addr: `0x${string}`) => {
     setSelectedVault(addr)
@@ -101,14 +127,13 @@ export default function App() {
     setStormResults([])
   }, [])
 
-  // ── createVault ──────────────────────────────────────────────────────────────
+  // ── createVault ──────────────────────────────────────────────────────────
 
   const handleCreateVault = async () => {
     if (!walletClient || !publicClient) return
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
     setIsCreating(true)
     try {
-      // Step 1: get live fee params (retries once; throws clear error on failure)
       let feeParams
       try {
         feeParams = await getFeeParams(publicClient)
@@ -118,7 +143,6 @@ export default function App() {
         return
       }
 
-      // Step 2: estimate gas with +20% buffer
       let gasLimit = 800_000n
       try {
         const estimated = await publicClient.estimateContractGas({
@@ -146,7 +170,6 @@ export default function App() {
       toast.info('Creating vault…')
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
 
-      // Decode VaultCreated event to get the vault address
       let newVault: `0x${string}` | null = null
       for (const log of receipt.logs as Log[]) {
         try {
@@ -170,7 +193,51 @@ export default function App() {
     } finally { setIsCreating(false) }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
+  // ── Render helpers ──────────────────────────────────────────────────────
+
+  const tabBar = (
+    <div className="mb-5 grid grid-cols-3 gap-1 rounded-2xl p-1"
+      style={{ background: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
+      {TABS.map(({ id, label, Icon }) => (
+        <button key={id} onClick={() => setTab(id)}
+          className="flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold transition-all"
+          style={tab === id
+            ? { background: '#fff', color: 'var(--ink)', boxShadow: '0 1px 4px rgba(18,45,69,0.10)' }
+            : { color: 'var(--subtle)' }}>
+          <Icon className="size-3.5" />{label}
+        </button>
+      ))}
+    </div>
+  )
+
+  const screens = (readOnly: boolean) => (
+    <>
+      {readOnly && (
+        <div className="mb-4 flex items-center gap-2 rounded-2xl px-4 py-3 text-xs"
+          style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.18)', color: 'var(--ink-2)' }}>
+          <Eye className="size-4 shrink-0" style={{ color: '#6366f1' }} />
+          <span><span className="font-semibold">Viewing read-only.</span> Connect your wallet to deposit, pay, or withdraw.</span>
+        </div>
+      )}
+      <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
+        <VaultScreen vaultAddress={selectedVault!} />
+      </div>
+      <div style={{ display: tab === 'pay' ? 'block' : 'none' }}>
+        {readOnly
+          ? <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <Send className="size-8 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
+              <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Connect wallet to pay</p>
+            </div>
+          : <PayScreen vaultAddress={selectedVault!} onActivity={triggerActivity} onStormResults={handleStormResults} />
+        }
+      </div>
+      <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
+        <ActivityScreen vaultAddress={selectedVault!} refreshTrigger={activityTrigger} stormResults={stormResults} />
+      </div>
+    </>
+  )
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-dvh" style={{ background: 'var(--bg-gradient)' }}>
@@ -192,21 +259,36 @@ export default function App() {
               </a>
             )}
           </div>
+          {/* ConnectKitButton is always the single connect/disconnect UI */}
           <ConnectKitButton />
         </header>
 
         {/* Tagline */}
         <div className="mb-5 rounded-2xl px-4 py-3 text-xs" style={{ background: 'rgba(18,45,69,0.04)', border: '1px solid var(--border)' }}>
-          <span className="font-semibold" style={{ color: 'var(--ink-2)' }}>Idempotent USDC payouts.</span>
-          {' '}
+          <span className="font-semibold" style={{ color: 'var(--ink-2)' }}>Idempotent USDC payouts.</span>{' '}
           <span style={{ color: 'var(--muted)' }}>Every intent paid exactly once — no double-spends, no over-budget surprises, even under retries.</span>
         </div>
 
-        {/* ── Vault picker / create prompt ─────────────────────────────────── */}
+        {/* Connecting / reconnecting state */}
+        {isReconnecting && (
+          <div className="mb-4 flex items-center gap-2 rounded-2xl px-4 py-3 text-xs"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--muted)' }}>
+            <Loader2 className="size-4 animate-spin shrink-0" />
+            Connecting wallet…
+          </div>
+        )}
+
+        {/* Wrong chain banner */}
+        {wrongChain && (
+          <div className="mb-5 rounded-2xl px-4 py-3 text-center text-sm" style={{ background: 'rgba(186,43,76,0.07)', border: '1px solid rgba(186,43,76,0.2)', color: 'var(--danger)' }}>
+            Switch to Arc Testnet to continue
+          </div>
+        )}
+
+        {/* Vault picker / create prompt — only when connected and on correct chain */}
         {isConnected && !wrongChain && (
           <div className="mb-5">
             {vaultList.length === 0 ? (
-              /* No vaults — prompt to create */
               <div className="rounded-2xl p-5 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <p className="text-sm font-semibold mb-1" style={{ color: 'var(--ink)' }}>You don't have a vault yet</p>
                 <p className="text-xs mb-4" style={{ color: 'var(--muted)' }}>Deploy your own OncePayoutVault — owned by your wallet, funded by you.</p>
@@ -219,7 +301,6 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              /* Has vaults — picker */
               <div className="relative">
                 <button onClick={() => setIsPickerOpen(o => !o)}
                   className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm transition hover:opacity-80"
@@ -269,71 +350,29 @@ export default function App() {
           </div>
         )}
 
-        {/* Wrong chain banner */}
-        {wrongChain && (
-          <div className="mb-5 rounded-2xl px-4 py-3 text-center text-sm" style={{ background: 'rgba(186,43,76,0.07)', border: '1px solid rgba(186,43,76,0.2)', color: 'var(--danger)' }}>
-            Switch to Arc Testnet to continue
-          </div>
-        )}
-
-        {/* Tab bar — only shown when a vault is selected */}
-        {selectedVault && (
+        {/* Vault screens — connected with a vault */}
+        {isConnected && !wrongChain && selectedVault && (
           <>
-            <div className="mb-5 grid grid-cols-3 gap-1 rounded-2xl p-1"
-              style={{ background: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
-              {TABS.map(({ id, label, Icon }) => (
-                <button key={id} onClick={() => setTab(id)}
-                  className="flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold transition-all"
-                  style={tab === id
-                    ? { background: '#fff', color: 'var(--ink)', boxShadow: '0 1px 4px rgba(18,45,69,0.10)' }
-                    : { color: 'var(--subtle)' }}>
-                  <Icon className="size-3.5" />{label}
-                </button>
-              ))}
-            </div>
-
-            {/* Screens — keep all mounted so state persists across tab switches */}
-            <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
-              <VaultScreen vaultAddress={selectedVault} />
-            </div>
-            <div style={{ display: tab === 'pay' ? 'block' : 'none' }}>
-              <PayScreen vaultAddress={selectedVault} onActivity={triggerActivity} onStormResults={handleStormResults} />
-            </div>
-            <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
-              <ActivityScreen vaultAddress={selectedVault} refreshTrigger={activityTrigger} stormResults={stormResults} />
-            </div>
+            {tabBar}
+            {screens(false)}
           </>
         )}
 
-        {/* Not connected — prompt */}
-        {!isConnected && !selectedVault && (
+        {/* Read-only mode — ?vault= in URL but wallet disconnected (or different chain) */}
+        {!isConnected && !isReconnecting && selectedVault && (
+          <>
+            {tabBar}
+            {screens(true)}
+          </>
+        )}
+
+        {/* No wallet, no vault URL — prompt to connect */}
+        {!isConnected && !isReconnecting && !selectedVault && (
           <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
             <Shield className="size-10 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
             <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Connect your wallet</p>
             <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>Connect to create or manage your vault, or open a vault link to view it read-only.</p>
           </div>
-        )}
-
-        {/* Connected but no vault selected (read-only URL) */}
-        {!isConnected && selectedVault && (
-          <>
-            <div className="mb-5 grid grid-cols-3 gap-1 rounded-2xl p-1"
-              style={{ background: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
-              {TABS.map(({ id, label, Icon }) => (
-                <button key={id} onClick={() => setTab(id)}
-                  className="flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold transition-all"
-                  style={tab === id ? { background: '#fff', color: 'var(--ink)', boxShadow: '0 1px 4px rgba(18,45,69,0.10)' } : { color: 'var(--subtle)' }}>
-                  <Icon className="size-3.5" />{label}
-                </button>
-              ))}
-            </div>
-            <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
-              <VaultScreen vaultAddress={selectedVault} />
-            </div>
-            <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
-              <ActivityScreen vaultAddress={selectedVault} refreshTrigger={activityTrigger} stormResults={stormResults} />
-            </div>
-          </>
         )}
 
       </div>

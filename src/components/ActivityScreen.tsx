@@ -14,6 +14,7 @@ import { CHAIN_ID, EXPLORER_BASE, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, formatAddress, formatTimestamp } from '../utils'
 import type { AttemptResult } from './PayScreen'
+import { decodeFunctionData } from 'viem'
 
 interface TxItem {
   txHash: string
@@ -55,19 +56,50 @@ export function ActivityScreen({
   const [apiError, setApiError] = useState<string | null>(null)
   const [lastFetched, setLastFetched] = useState<number | null>(null)
 
-  const decodeRevertReason = useCallback(async (hash: string, blockNumber: bigint, apiReason: string | null | undefined): Promise<string> => {
-    if (apiReason) { for (const c of ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER']) { if (apiReason.includes(c)) return c } }
+  /**
+   * Decode order per spec:
+   * (a) Explorer's revert_reason string — scan for known error names.
+   * (b) eth_call at 'latest' with same calldata from same sender — gets ABI-decodable error bytes.
+   * (c) For pay() calls: read paidIntents(intentId) — if true and not the PAID tx, it's DUPLICATE_INTENT.
+   * (d) REVERTED — never show a generic FAILED.
+   */
+  const decodeRevertReason = useCallback(async (
+    hash: string,
+    _blockNumber: bigint,
+    apiReason: string | null | undefined,
+  ): Promise<string> => {
+    const KNOWN = ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER']
+
+    // (a) Explorer reason string
+    if (apiReason) {
+      for (const c of KNOWN) { if (apiReason.includes(c)) return c }
+      // Also try hex-decoded ABI error from the revert_reason field
+      if (apiReason.startsWith('0x')) {
+        try { return decodeErrorResult({ abi: VAULT_ABI, data: apiReason as `0x${string}` }).errorName } catch { /* fall */ }
+      }
+    }
+
     if (!publicClient) return 'REVERTED'
+
+    // (b) eth_call at 'latest' — Arc testnet has no historical state pruning at this RPC level
+    //     so replaying at the original blockNumber often fails; 'latest' gives us the revert data
     try {
       const tx = await publicClient.getTransaction({ hash: hash as `0x${string}` })
-      await publicClient.call({ to: tx.to ?? undefined, data: tx.input, blockNumber })
-      return 'REVERTED'
+      await publicClient.call({ to: tx.to ?? undefined, data: tx.input, account: tx.from })
+      // No revert — possibly state has changed; fall through to (c)
     } catch (revertErr) {
       const msg = (revertErr as Error)?.message ?? ''
-      for (const c of ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER']) { if (msg.includes(c)) return c }
+      for (const c of KNOWN) { if (msg.includes(c)) return c }
       const data = (revertErr as { data?: `0x${string}` })?.data
-      if (data && data !== '0x') { try { return decodeErrorResult({ abi: VAULT_ABI, data }).errorName } catch { /* fall */ } }
+      if (data && data !== '0x') {
+        try { return decodeErrorResult({ abi: VAULT_ABI, data }).errorName } catch { /* fall */ }
+      }
     }
+
+    // (c) paidIntents fallback — for pay() calls: if this tx isn't the PAID one and intent is marked
+    //     paid, it must be DUPLICATE_INTENT. We can't extract intentId here without full input decoding,
+    //     so we skip this and leave it to the caller to pass context if needed.
+
     return 'REVERTED'
   }, [publicClient])
 
@@ -88,6 +120,18 @@ export function ActivityScreen({
     return {}
   }, [publicClient])
 
+  // Extract intentId from a pay() calldata input (used for paidIntents fallback)
+  function extractIntentId(input: `0x${string}`): `0x${string}` | null {
+    try {
+      const decoded = decodeFunctionData({ abi: VAULT_ABI, data: input })
+      if (decoded.functionName === 'pay') {
+        const args = decoded.args as [`0x${string}`, `0x${string}`, bigint, bigint]
+        return args[0]
+      }
+    } catch { /* not a pay() call */ }
+    return null
+  }
+
   const fetchFromApi = useCallback(async () => {
     setLoading(true); setApiError(null)
     try {
@@ -103,7 +147,26 @@ export function ActivityScreen({
           const { amount, to } = await decodePaidLog(tx.hash)
           return { txHash: tx.hash, status: 'PAID', amount, to, timestamp: ts, blockNumber, fromChain: true }
         } else {
-          const reason = await decodeRevertReason(tx.hash, blockNumber, tx.revert_reason)
+          let reason = await decodeRevertReason(tx.hash, blockNumber, tx.revert_reason)
+
+          // (c) paidIntents fallback: if still REVERTED and it's a pay() call,
+          //     check paidIntents(intentId) on-chain. If true → DUPLICATE_INTENT.
+          if (reason === 'REVERTED' && publicClient) {
+            try {
+              const fullTx = await publicClient.getTransaction({ hash: tx.hash as `0x${string}` })
+              const intentId = extractIntentId(fullTx.input)
+              if (intentId) {
+                const isPaid = await publicClient.readContract({
+                  address: vaultAddress,
+                  abi: VAULT_ABI,
+                  functionName: 'paidIntents',
+                  args: [intentId],
+                })
+                if (isPaid) reason = 'DUPLICATE_INTENT'
+              }
+            } catch { /* leave as REVERTED */ }
+          }
+
           return { txHash: tx.hash, status: 'REFUSED', reason, timestamp: ts, blockNumber, fromChain: true }
         }
       }))
@@ -113,7 +176,7 @@ export function ActivityScreen({
       console.error('Blockscout fetch failed:', err)
       setApiError('Could not load history from the explorer. The API may be temporarily unavailable.')
     } finally { setLoading(false) }
-  }, [vaultAddress, decodePaidLog, decodeRevertReason])
+  }, [vaultAddress, decodePaidLog, decodeRevertReason, publicClient])
 
   useEffect(() => { fetchFromApi() }, [refreshTrigger, fetchFromApi])
 

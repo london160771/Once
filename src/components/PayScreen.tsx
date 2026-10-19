@@ -79,11 +79,13 @@ export function PayScreen({
     recipient || '0x0000000000000000000000000000000000000000', amount || '0', nonce,
   )
 
-  async function decodeOnchainRevert(hash: `0x${string}`, blockNumber: bigint): Promise<string> {
+  // Replay the tx calldata with eth_call at 'latest' (Arc testnet doesn't retain
+  // historical state at the blockNumber level via RPC, so 'latest' is more reliable).
+  async function decodeOnchainRevert(hash: `0x${string}`): Promise<string> {
     if (!publicClient) return 'REVERTED'
     try {
       const tx = await publicClient.getTransaction({ hash })
-      await publicClient.call({ to: tx.to ?? undefined, data: tx.input, blockNumber })
+      await publicClient.call({ to: tx.to ?? undefined, data: tx.input, account: tx.from })
       return 'REVERTED'
     } catch (revertErr) { return decodeRevertReason(revertErr) }
   }
@@ -97,7 +99,7 @@ export function PayScreen({
     // getFeeParams retries once and throws a clear message on failure.
     let payFee
     try { payFee = await getFeeParams(publicClient) }
-    catch (feeErr) { setSingleResult({ index: 1, status: 'CANCELLED', reason: (feeErr as Error).message }); toast.error((feeErr as Error).message); setIsSinglePaying(false); return }
+    catch (feeErr) { setSingleResult({ index: 1, status: 'NOT_SENT', reason: (feeErr as Error).message }); toast.error((feeErr as Error).message); setIsSinglePaying(false); return }
     const { maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg } = payFee
     try {
       const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt], gas: 150_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg })
@@ -106,7 +108,7 @@ export function PayScreen({
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
         toast.success('Payment confirmed'); onActivity()
       } else {
-        const reason = await decodeOnchainRevert(hash, receipt.blockNumber)
+        const reason = await decodeOnchainRevert(hash)
         setSingleResult({ index: 1, status: 'REFUSED', reason, txHash: hash, blockNumber: receipt.blockNumber })
         toast.error(`Refused: ${reason}`)
       }
@@ -172,7 +174,7 @@ export function PayScreen({
       try {
         const receipt = await publicClient.waitForTransactionReceipt({ hash: o.hash })
         if (receipt.status === 'success') return { index: o.index, status: 'PAID' as const, txHash: o.hash, blockNumber: receipt.blockNumber }
-        const reason = await decodeOnchainRevert(o.hash, receipt.blockNumber)
+        const reason = await decodeOnchainRevert(o.hash)
         return { index: o.index, status: 'REFUSED' as const, reason, txHash: o.hash, blockNumber: receipt.blockNumber }
       } catch (err) { return { index: o.index, status: 'REFUSED' as const, reason: decodeRevertReason(err), txHash: o.hash } }
     }))

@@ -79,6 +79,37 @@ Three screens, accessible via tab bar:
 
 ---
 
+## Verifying contracts on the explorer
+
+Both contracts are verified on Arc Testnet (Blockscout). Rerun these commands after any redeployment — they work on mainnet too by changing `--chain-id` and `--verifier-url`.
+
+```bash
+# Verify OncePayoutVaultFactory (no constructor args)
+forge verify-contract <FACTORY_ADDRESS> \
+  contracts/OncePayoutVaultFactory.sol:OncePayoutVaultFactory \
+  --chain-id 5042002 \
+  --verifier blockscout \
+  --verifier-url https://explorer.testnet.arc.io/api/ \
+  --watch
+
+# Verify OncePayoutVault (pass the usdc + owner constructor args)
+forge verify-contract <VAULT_ADDRESS> \
+  contracts/OncePayoutVault.sol:OncePayoutVault \
+  --chain-id 5042002 \
+  --verifier blockscout \
+  --verifier-url https://explorer.testnet.arc.io/api/ \
+  --constructor-args $(cast abi-encode "constructor(address,address)" \
+      0x3600000000000000000000000000000000000000 \
+      <OWNER_ADDRESS>) \
+  --watch
+
+# For Arc mainnet, change:
+#   --chain-id 5042
+#   --verifier-url https://explorer.arc.io/api/
+```
+
+---
+
 ## Chain configuration
 
 All chain settings live in **`src/onchain-config.ts`**.
@@ -90,7 +121,7 @@ To switch to Arc mainnet:
 export const NETWORK = 'mainnet' as 'testnet' | 'mainnet'
 ```
 
-Then redeploy the contract on Arc mainnet with `forge create` or Circle SCP, update `VAULT_ADDRESS`, and rebuild.
+Then redeploy the factory on Arc mainnet, update `FACTORY_ADDRESS`, verify both contracts using the commands above (with mainnet chain-id and verifier-url), and rebuild.
 
 ---
 
