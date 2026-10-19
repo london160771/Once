@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useSwitchChain, usePublicClient } from 'wagmi'
-import { keccak256, toHex, encodeAbiParameters, parseAbiParameters } from 'viem'
-import { Loader2, Zap, RefreshCw, CheckCircle2, XCircle, Copy } from 'lucide-react'
+import { useState, useCallback, useRef } from 'react'
+import { useAccount, useSwitchChain, usePublicClient, useWalletClient } from 'wagmi'
+import { keccak256, encodeAbiParameters, parseAbiParameters, encodeFunctionData, decodeErrorResult } from 'viem'
+import { Loader2, Zap, RefreshCw, CheckCircle2, XCircle, Copy, ExternalLink } from 'lucide-react'
 import { VAULT_ADDRESS, CHAIN_ID, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, parseUsdc, parseRevertReason } from '../utils'
@@ -22,12 +22,29 @@ const glass = {
   } as React.CSSProperties,
 }
 
-interface AttemptResult {
+/** Decode a revert reason from raw error data returned in a receipt */
+function decodeRevertFromReceipt(err: unknown): string {
+  try {
+    // Try to extract from ContractFunctionRevertedError
+    const msg = (err as Error)?.message ?? String(err)
+    for (const code of ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER']) {
+      if (msg.includes(code)) return code
+    }
+    // Try decoding raw error data if present
+    const data = (err as { data?: `0x${string}` })?.data
+    if (data && data !== '0x') {
+      const decoded = decodeErrorResult({ abi: VAULT_ABI, data })
+      return decoded.errorName
+    }
+  } catch { /* fall through */ }
+  return parseRevertReason(err)
+}
+
+export interface AttemptResult {
   index: number
-  intentId: string
-  status: 'success' | 'failed'
+  status: 'PAID' | 'REFUSED'
   reason?: string
-  txHash?: string
+  txHash: `0x${string}`
 }
 
 function generateIntentId(recipient: string, amount: string, nonce: string): `0x${string}` {
@@ -39,101 +56,166 @@ function generateIntentId(recipient: string, amount: string, nonce: string): `0x
   )
 }
 
-export function PayScreen({ onActivity }: { onActivity: () => void }) {
+export function PayScreen({
+  onActivity,
+  onStormResults,
+}: {
+  onActivity: () => void
+  onStormResults: (results: AttemptResult[]) => void
+}) {
   const { address, chainId, isConnected } = useAccount()
   const { switchChain } = useSwitchChain()
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
+  const { data: walletClient } = useWalletClient({ chainId: CHAIN_ID })
   const wrongChain = isConnected && chainId !== CHAIN_ID
 
   const [recipient, setRecipient] = useState('')
   const [amount, setAmount] = useState('')
-  const [intentId, setIntentId] = useState<`0x${string}` | ''>('')
   const [nonce, setNonce] = useState(() => crypto.randomUUID())
+  const [lockedIntentId, setLockedIntentId] = useState<`0x${string}` | null>(null)
+
+  const [isSinglePaying, setIsSinglePaying] = useState(false)
+  const [singleResult, setSingleResult] = useState<AttemptResult | null>(null)
 
   const [stormResults, setStormResults] = useState<AttemptResult[]>([])
   const [isStorming, setIsStorming] = useState(false)
+  const [stormProgress, setStormProgress] = useState(0)
 
-  // ── Single pay ──────────────────────────────────────────────────────────────
-  const { writeContract: pay, data: payHash, isPending: payPending } = useWriteContract()
-  const { isLoading: payConfirming, isSuccess: paySuccess } = useWaitForTransactionReceipt({ hash: payHash })
+  const currentIntentId: `0x${string}` =
+    lockedIntentId ??
+    generateIntentId(
+      recipient || '0x0000000000000000000000000000000000000000',
+      amount || '0',
+      nonce,
+    )
 
-  const currentIntentId = intentId || generateIntentId(recipient || '0x0000000000000000000000000000000000000000', amount || '0', nonce)
-
-  const handlePay = () => {
-    if (!isConnected) return
+  // ── Single pay ───────────────────────────────────────────────────────────────
+  const handlePay = async () => {
+    if (!isConnected || !walletClient || !publicClient) return
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
-    if (!recipient || !amount) return
-    const id = currentIntentId as `0x${string}`
-    setIntentId(id)
+    if (!recipient || !amount) { toast.error('Fill in recipient and amount'); return }
+
+    const id = currentIntentId
+    setLockedIntentId(id)
+    setSingleResult(null)
+    setIsSinglePaying(true)
+
     const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600)
-    pay({
-      address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'pay',
-      args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt],
-    })
+    const rawAmount = parseUsdc(amount)
+
+    try {
+      const hash = await walletClient.writeContract({
+        address: VAULT_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: 'pay',
+        args: [id, recipient as `0x${string}`, rawAmount, expiresAt],
+        gas: 150_000n,
+      })
+      await publicClient.waitForTransactionReceipt({ hash })
+      const result: AttemptResult = { index: 1, status: 'PAID', txHash: hash }
+      setSingleResult(result)
+      toast.success('Payment confirmed onchain')
+      onActivity()
+    } catch (err) {
+      const reason = decodeRevertFromReceipt(err)
+      // Even on revert we may have a tx hash — extract it
+      const hash = (err as { transactionHash?: `0x${string}` })?.transactionHash
+      if (hash) {
+        const result: AttemptResult = { index: 1, status: 'REFUSED', reason, txHash: hash }
+        setSingleResult(result)
+      } else {
+        toast.error(reason === 'CANCELLED' ? 'Cancelled' : `Refused: ${reason}`)
+      }
+    } finally {
+      setIsSinglePaying(false)
+    }
   }
 
-  if (paySuccess) { onActivity() }
-
-  // ── Retry storm ─────────────────────────────────────────────────────────────
-  const handleRetrySt = useCallback(async () => {
-    if (!isConnected || wrongChain || !recipient || !amount || !publicClient) return
+  // ── Retry storm: 5 REAL onchain transactions ─────────────────────────────────
+  const handleRetryStorm = useCallback(async () => {
+    if (!isConnected || !walletClient || !publicClient) return
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (!recipient || !amount) { toast.error('Fill in recipient and amount'); return }
 
+    const id = currentIntentId
+    setLockedIntentId(id)
     setIsStorming(true)
     setStormResults([])
+    setStormProgress(0)
 
-    const id = currentIntentId as `0x${string}`
-    setIntentId(id)
     const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600)
     const rawAmount = parseUsdc(amount)
 
     const results: AttemptResult[] = []
+
     for (let i = 0; i < 5; i++) {
+      setStormProgress(i + 1)
       try {
-        const hash = await publicClient.simulateContract({
+        // Send a real transaction every time.
+        // Attempts 2–5 will revert onchain with DUPLICATE_INTENT.
+        // We pass an explicit gas limit so the wallet doesn't reject on simulation.
+        const hash = await walletClient.writeContract({
           address: VAULT_ADDRESS,
           abi: VAULT_ABI,
           functionName: 'pay',
           args: [id, recipient as `0x${string}`, rawAmount, expiresAt],
-          account: address,
-        }).then(async ({ request }) => {
-          // Simulation passed — but we can only actually send one tx per nonce from wagmi's writeContractAsync
-          // For the storm we simulate all 5 and then fire only the winner
-          return '0x_simulated_' + i as `0x${string}`
+          gas: 150_000n,
         })
-        results.push({ index: i + 1, intentId: id, status: 'success', txHash: hash })
-        break // only first can succeed — stop after simulation pass
+        // Wait for the receipt to confirm success or revert
+        const receipt = await publicClient.waitForTransactionReceipt({ hash })
+        if (receipt.status === 'success') {
+          results.push({ index: i + 1, status: 'PAID', txHash: hash })
+          toast.success(`Attempt ${i + 1}: PAID`)
+          onActivity()
+        } else {
+          // Tx landed but reverted — decode reason from the receipt
+          let reason = 'REVERTED'
+          try {
+            const tx = await publicClient.getTransaction({ hash })
+            const callResult = await publicClient.call({
+              to: tx.to ?? undefined,
+              data: tx.input,
+              blockNumber: receipt.blockNumber,
+            }).catch(e => { throw e })
+            void callResult // shouldn't reach here; revert surfaces in catch
+          } catch (revertErr) {
+            reason = decodeRevertFromReceipt(revertErr)
+          }
+          results.push({ index: i + 1, status: 'REFUSED', reason, txHash: hash })
+          toast.error(`Attempt ${i + 1}: ${reason}`)
+        }
       } catch (err) {
-        const reason = parseRevertReason(err)
-        results.push({ index: i + 1, intentId: id, status: 'failed', reason })
+        // walletClient.writeContract throws before a tx hash when the wallet
+        // rejects locally. If it threw AFTER submission, extract the hash.
+        const hash = (err as { transactionHash?: `0x${string}` })?.transactionHash
+        const reason = decodeRevertFromReceipt(err)
+        if (hash) {
+          results.push({ index: i + 1, status: 'REFUSED', reason, txHash: hash })
+          toast.error(`Attempt ${i + 1}: ${reason}`)
+        } else {
+          // Wallet rejected before broadcast (user cancelled or local sim failed).
+          // Stop the storm — user must re-approve or something systemic is wrong.
+          toast.error(`Attempt ${i + 1} not sent: ${reason}`)
+          // Pad remaining slots so results array is complete
+          for (let j = i + 1; j < 5; j++) {
+            results.push({ index: j + 1, status: 'REFUSED', reason: 'NOT_SENT', txHash: '0x' as `0x${string}` })
+          }
+          break
+        }
       }
     }
 
-    // Fill remaining 5 slots as DUPLICATE_INTENT (simulation correctly shows they fail)
-    while (results.length < 5) {
-      results.push({ index: results.length + 1, intentId: id, status: 'failed', reason: 'DUPLICATE_INTENT' })
-    }
-
-    // Actually send the real transaction for the first attempt
-    try {
-      pay({
-        address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'pay',
-        args: [id, recipient as `0x${string}`, rawAmount, expiresAt],
-      })
-      toast.success('First attempt sent onchain — all others refused.')
-    } catch {
-      toast.error('All 5 attempts refused.')
-    }
-
     setStormResults(results)
+    onStormResults(results)
     setIsStorming(false)
-    onActivity()
-  }, [isConnected, wrongChain, recipient, amount, currentIntentId, publicClient, address, pay, switchChain, onActivity])
+    setStormProgress(0)
+  }, [isConnected, walletClient, publicClient, wrongChain, recipient, amount, currentIntentId, switchChain, onActivity, onStormResults])
 
   const regenerate = () => {
     setNonce(crypto.randomUUID())
-    setIntentId('')
+    setLockedIntentId(null)
     setStormResults([])
+    setSingleResult(null)
   }
 
   const copyId = () => {
@@ -199,26 +281,18 @@ export function PayScreen({ onActivity }: { onActivity: () => void }) {
         {/* Pay button */}
         <button
           onClick={handlePay}
-          disabled={!recipient || !amount || payPending || payConfirming}
+          disabled={!recipient || !amount || isSinglePaying || isStorming}
           className="w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
           style={{ background: 'var(--accent)' }}
         >
           {!isConnected ? 'Connect Wallet'
             : wrongChain ? 'Switch to Arc Testnet'
-              : payPending ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Confirm in wallet…</span>
-                : payConfirming ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Confirming…</span>
-                  : 'Pay Once'}
+              : isSinglePaying ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Confirming…</span>
+                : 'Pay Once'}
         </button>
 
-        {payHash && paySuccess && (
-          <a
-            href={buildTxUrl(payHash)}
-            target="_blank" rel="noopener noreferrer"
-            className="mt-2 inline-flex items-center gap-1 text-xs font-medium"
-            style={{ color: 'var(--success)' }}
-          >
-            Payment confirmed ↗
-          </a>
+        {singleResult && (
+          <AttemptRow result={singleResult} className="mt-3" />
         )}
       </section>
 
@@ -229,47 +303,27 @@ export function PayScreen({ onActivity }: { onActivity: () => void }) {
           <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Retry Storm</span>
         </div>
         <p className="mb-4 text-xs" style={{ color: 'var(--muted)' }}>
-          Fires the same intent 5 times. Exactly 1 succeeds; the rest are refused with the reason code.
+          Fires the same intent as <span className="mono font-semibold">5 real onchain transactions</span>.
+          Exactly 1 succeeds; the rest land onchain and revert with <span className="mono">DUPLICATE_INTENT</span>.
         </p>
         <button
-          onClick={handleRetrySt}
-          disabled={!recipient || !amount || isStorming || !isConnected}
+          onClick={handleRetryStorm}
+          disabled={!recipient || !amount || isStorming || isSinglePaying || !isConnected}
           className="w-full rounded-2xl py-3.5 text-sm font-semibold transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
           style={{ background: '#fff3cd', color: '#7c5100', border: '1px solid #e5a100' }}
         >
           {isStorming ? (
             <span className="flex items-center justify-center gap-2">
-              <Loader2 className="size-4 animate-spin" />Simulating 5 calls…
+              <Loader2 className="size-4 animate-spin" />
+              Sending attempt {stormProgress} of 5…
             </span>
-          ) : '⚡ Retry Storm (×5)'}
+          ) : 'Retry Storm (×5 real txs)'}
         </button>
 
         {stormResults.length > 0 && (
           <div className="mt-4 space-y-2">
             {stormResults.map(r => (
-              <div
-                key={r.index}
-                className="flex items-center justify-between rounded-xl px-3 py-2"
-                style={{
-                  background: r.status === 'success' ? 'rgba(26,128,71,0.06)' : 'rgba(186,43,76,0.05)',
-                  border: `1px solid ${r.status === 'success' ? 'rgba(26,128,71,0.18)' : 'rgba(186,43,76,0.12)'}`,
-                }}
-              >
-                <div className="flex items-center gap-2">
-                  {r.status === 'success'
-                    ? <CheckCircle2 className="size-4 shrink-0" style={{ color: 'var(--success)' }} />
-                    : <XCircle className="size-4 shrink-0" style={{ color: 'var(--danger)' }} />}
-                  <span className="text-xs font-medium" style={{ color: 'var(--ink)' }}>
-                    Attempt {r.index}
-                  </span>
-                </div>
-                <span
-                  className="mono text-xs font-semibold"
-                  style={{ color: r.status === 'success' ? 'var(--success)' : 'var(--danger)' }}
-                >
-                  {r.status === 'success' ? 'PAID' : r.reason}
-                </span>
-              </div>
+              <AttemptRow key={r.index} result={r} />
             ))}
           </div>
         )}
@@ -280,6 +334,50 @@ export function PayScreen({ onActivity }: { onActivity: () => void }) {
         <p className="font-semibold mb-1" style={{ color: 'var(--ink-2)' }}>How idempotency works</p>
         <p>Each intent is identified by a <span className="mono">bytes32</span> hash. The contract marks it <span className="mono">paid</span> before transferring, so any retry — from the same caller or another — is rejected with <span className="mono">DUPLICATE_INTENT</span>.</p>
       </div>
+    </div>
+  )
+}
+
+// ── Shared attempt row ─────────────────────────────────────────────────────────
+
+function AttemptRow({ result, className = '' }: { result: AttemptResult; className?: string }) {
+  return (
+    <div
+      className={`rounded-xl px-3 py-2.5 ${className}`}
+      style={{
+        background: result.status === 'PAID' ? 'rgba(26,128,71,0.06)' : 'rgba(186,43,76,0.05)',
+        border: `1px solid ${result.status === 'PAID' ? 'rgba(26,128,71,0.18)' : 'rgba(186,43,76,0.12)'}`,
+      }}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {result.status === 'PAID'
+            ? <CheckCircle2 className="size-4 shrink-0" style={{ color: 'var(--success)' }} />
+            : <XCircle className="size-4 shrink-0" style={{ color: 'var(--danger)' }} />}
+          <span className="text-xs font-medium" style={{ color: 'var(--ink)' }}>
+            {result.index === 1 && !('reason' in result && result.reason) ? 'Attempt 1' : `Attempt ${result.index}`}
+          </span>
+        </div>
+        <span
+          className="mono text-xs font-semibold"
+          style={{ color: result.status === 'PAID' ? 'var(--success)' : 'var(--danger)' }}
+        >
+          {result.status === 'PAID' ? 'PAID' : result.reason ?? 'REFUSED'}
+        </span>
+      </div>
+      {result.txHash && result.txHash !== '0x' && (
+        <div className="mt-1.5 flex items-center gap-1 pl-6">
+          <a
+            href={buildTxUrl(result.txHash)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mono flex items-center gap-1 truncate text-xs"
+            style={{ color: 'var(--accent-hover)' }}
+          >
+            {result.txHash.slice(0, 16)}… <ExternalLink className="size-3 shrink-0" />
+          </a>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useSwitchChain } from 'wagmi'
+import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useSwitchChain, useWalletClient, usePublicClient } from 'wagmi'
 import { erc20Abi } from 'viem'
-import { Loader2, ShieldCheck, PiggyBank, Target, TrendingUp, ArrowDownToLine } from 'lucide-react'
+import { Loader2, ShieldCheck, PiggyBank, Target, TrendingUp, ArrowDownToLine, PackageCheck } from 'lucide-react'
 import { TokenUSDC } from '@web3icons/react'
 import { VAULT_ADDRESS, USDC_ADDRESS, CHAIN_ID, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
@@ -26,6 +26,8 @@ const glass = {
 export function VaultScreen() {
   const { address, chainId, isConnected } = useAccount()
   const { switchChain } = useSwitchChain()
+  const { data: walletClient } = useWalletClient({ chainId: CHAIN_ID })
+  const publicClient = usePublicClient({ chainId: CHAIN_ID })
   const wrongChain = isConnected && chainId !== CHAIN_ID
 
   const [depositAmount, setDepositAmount] = useState('')
@@ -50,15 +52,16 @@ export function VaultScreen() {
 
   const remaining = (approvedBudget ?? 0n) - (totalPaid ?? 0n)
 
+  const refetchAll = () => { refetchBalance(); refetchBudget(); refetchPaid() }
+
   // ── Approve + Fund ──────────────────────────────────────────────────────────
   const { writeContract: approve, data: approveHash, isPending: approvePending } = useWriteContract()
   const { isLoading: approveConfirming, isSuccess: approveSuccess } = useWaitForTransactionReceipt({ hash: approveHash })
-
   const { writeContract: fund, data: fundHash, isPending: fundPending } = useWriteContract()
   const { isLoading: fundConfirming, isSuccess: fundSuccess } = useWaitForTransactionReceipt({ hash: fundHash })
 
-  // Watch for approve success to trigger fund
   const [pendingFundAmount, setPendingFundAmount] = useState<bigint | null>(null)
+
   const handleFund = () => {
     if (!isConnected) return
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
@@ -67,16 +70,13 @@ export function VaultScreen() {
     setPendingFundAmount(raw)
     approve({ address: USDC_ADDRESS, abi: erc20Abi, functionName: 'approve', args: [VAULT_ADDRESS, raw] })
   }
-
-  // Auto-fund after approval confirms
   if (approveSuccess && pendingFundAmount) {
     fund({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'fund', args: [pendingFundAmount] })
     setPendingFundAmount(null)
   }
-
   if (fundSuccess) {
-    refetchBalance(); refetchBudget(); refetchPaid()
-    if (fundHash) toast.success(`Funded! tx: ${fundHash.slice(0, 10)}…`)
+    refetchAll()
+    if (fundHash) toast.success('Deposited!')
   }
 
   // ── Set Budget ──────────────────────────────────────────────────────────────
@@ -89,13 +89,12 @@ export function VaultScreen() {
     const raw = parseUsdc(budgetAmount)
     setBudget({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'setBudget', args: [raw] })
   }
-
   if (budgetSuccess) {
-    refetchBudget(); refetchPaid()
-    if (budgetHash) toast.success(`Budget updated!`)
+    refetchAll()
+    toast.success('Budget updated!')
   }
 
-  // ── Withdraw ────────────────────────────────────────────────────────────────
+  // ── Withdraw Unspent ────────────────────────────────────────────────────────
   const { writeContract: withdraw, data: withdrawHash, isPending: withdrawPending } = useWriteContract()
   const { isLoading: withdrawConfirming, isSuccess: withdrawSuccess } = useWaitForTransactionReceipt({ hash: withdrawHash })
 
@@ -104,10 +103,56 @@ export function VaultScreen() {
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
     withdraw({ address: VAULT_ADDRESS, abi: VAULT_ABI, functionName: 'withdrawUnspent' })
   }
-
   if (withdrawSuccess) {
-    refetchBalance(); refetchBudget(); refetchPaid()
+    refetchAll()
     if (withdrawHash) toast.success('Unspent funds withdrawn!')
+  }
+
+  // ── Close Out: setBudget(totalPaid) then withdrawUnspent ────────────────────
+  // Runs as two sequential real transactions so both appear onchain.
+  const [isClosingOut, setIsClosingOut] = useState(false)
+  const [closeOutHashes, setCloseOutHashes] = useState<{ setBudget?: `0x${string}`; withdraw?: `0x${string}` }>({})
+
+  const handleCloseOut = async () => {
+    if (!isConnected || !walletClient || !publicClient) return
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (totalPaid === undefined) { toast.error('Vault data not loaded yet'); return }
+
+    setIsClosingOut(true)
+    setCloseOutHashes({})
+
+    try {
+      // Step 1: setBudget(totalPaid) — locks budget down to what was already paid
+      toast.info('Step 1/2: Setting budget to totalPaid…')
+      const setBudgetHash = await walletClient.writeContract({
+        address: VAULT_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: 'setBudget',
+        args: [totalPaid],
+        gas: 100_000n,
+      })
+      await publicClient.waitForTransactionReceipt({ hash: setBudgetHash })
+      setCloseOutHashes(h => ({ ...h, setBudget: setBudgetHash }))
+      toast.success('Budget locked to totalPaid')
+
+      // Step 2: withdrawUnspent — pulls all funds above the locked budget
+      toast.info('Step 2/2: Withdrawing unspent USDC…')
+      const withdrawHash = await walletClient.writeContract({
+        address: VAULT_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: 'withdrawUnspent',
+        gas: 100_000n,
+      })
+      await publicClient.waitForTransactionReceipt({ hash: withdrawHash })
+      setCloseOutHashes(h => ({ ...h, withdraw: withdrawHash }))
+      toast.success('Close out complete — unspent USDC returned!')
+      refetchAll()
+    } catch (err) {
+      const msg = (err as Error)?.message ?? 'Unknown error'
+      toast.error(`Close out failed: ${msg.slice(0, 80)}`)
+    } finally {
+      setIsClosingOut(false)
+    }
   }
 
   const isFunding = approvePending || approveConfirming || fundPending || fundConfirming
@@ -177,11 +222,9 @@ export function VaultScreen() {
           label="Approve & Deposit"
           isConnected={isConnected}
           wrongChain={wrongChain}
-          loadingLabel={approvePending || approveConfirming ? 'Approving…' : 'Funding…'}
+          loadingLabel={approvePending || approveConfirming ? 'Approving…' : 'Depositing…'}
         />
-        {fundHash && (
-          <TxLink hash={fundHash} label="Deposit confirmed" />
-        )}
+        {fundHash && <TxLink hash={fundHash} label="Deposit confirmed" />}
       </section>
 
       {/* Set Budget */}
@@ -216,14 +259,15 @@ export function VaultScreen() {
         {budgetHash && <TxLink hash={budgetHash} label="Budget updated" />}
       </section>
 
-      {/* Withdraw */}
+      {/* Withdraw Unspent */}
       <section style={glass.card} className="p-5">
         <div className="mb-3 flex items-center gap-2">
           <ArrowDownToLine className="size-[18px]" style={{ color: 'var(--accent)' }} />
           <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Withdraw Unspent</span>
         </div>
         <p className="mb-4 text-xs" style={{ color: 'var(--muted)' }}>
-          Withdraws vault balance minus uncommitted budget (balance − (budget − paid)).
+          Withdraws vault balance minus the committed-but-unpaid budget<br />
+          <span className="mono">withdrawable = balance − (budget − paid)</span>
         </p>
         <ActionButton
           onClick={handleWithdraw}
@@ -235,6 +279,43 @@ export function VaultScreen() {
           loadingLabel="Withdrawing…"
         />
         {withdrawHash && <TxLink hash={withdrawHash} label="Withdrawn" />}
+      </section>
+
+      {/* Close Out */}
+      <section
+        style={{
+          ...glass.card,
+          border: '1px solid rgba(186,43,76,0.25)',
+          background: 'rgba(254,242,242,0.7)',
+        }}
+        className="p-5"
+      >
+        <div className="mb-3 flex items-center gap-2">
+          <PackageCheck className="size-[18px]" style={{ color: 'var(--danger)' }} />
+          <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Close Out</span>
+        </div>
+        <p className="mb-4 text-xs" style={{ color: 'var(--muted)' }}>
+          Two-step atomic close: sets budget down to <span className="mono">totalPaid</span> (locking the committed amount), then withdraws all remaining USDC back to your wallet.
+        </p>
+        <button
+          onClick={handleCloseOut}
+          disabled={isClosingOut || !isConnected || wrongChain}
+          className="w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ background: 'var(--danger)' }}
+        >
+          {!isConnected ? 'Connect Wallet'
+            : wrongChain ? 'Switch to Arc Testnet'
+              : isClosingOut
+                ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Closing out…</span>
+                : 'Close Out Vault'}
+        </button>
+
+        {closeOutHashes.setBudget && (
+          <TxLink hash={closeOutHashes.setBudget} label="1. Budget locked" />
+        )}
+        {closeOutHashes.withdraw && (
+          <TxLink hash={closeOutHashes.withdraw} label="2. Funds withdrawn" />
+        )}
       </section>
     </div>
   )

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ConnectKitButton } from 'connectkit'
 import { Shield, Send, Activity } from 'lucide-react'
 import { VaultScreen } from './components/VaultScreen'
-import { PayScreen } from './components/PayScreen'
+import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
 import { VAULT_ADDRESS, EXPLORER_BASE } from './onchain-config'
 import { formatAddress } from './utils'
@@ -18,8 +18,15 @@ const TABS: { id: Tab; label: string; Icon: typeof Shield }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>('vault')
   const [activityTrigger, setActivityTrigger] = useState(0)
+  // Storm results are lifted here so Activity can show refused attempts
+  const [stormResults, setStormResults] = useState<AttemptResult[]>([])
 
   const triggerActivity = () => setActivityTrigger(n => n + 1)
+
+  const handleStormResults = (results: AttemptResult[]) => {
+    setStormResults(results)
+    triggerActivity()
+  }
 
   return (
     <div className="min-h-dvh" style={{ background: 'var(--bg-gradient)' }}>
@@ -80,10 +87,16 @@ export default function App() {
           ))}
         </div>
 
-        {/* Screen */}
-        {tab === 'vault' && <VaultScreen />}
-        {tab === 'pay' && <PayScreen onActivity={triggerActivity} />}
-        {tab === 'activity' && <ActivityScreen refreshTrigger={activityTrigger} />}
+        {/* Screens — keep all mounted so state persists across tab switches */}
+        <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
+          <VaultScreen />
+        </div>
+        <div style={{ display: tab === 'pay' ? 'block' : 'none' }}>
+          <PayScreen onActivity={triggerActivity} onStormResults={handleStormResults} />
+        </div>
+        <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
+          <ActivityScreen refreshTrigger={activityTrigger} stormResults={stormResults} />
+        </div>
       </div>
     </div>
   )
