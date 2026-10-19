@@ -24,7 +24,7 @@ import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
 import { FACTORY_ADDRESS, CHAIN_ID, EXPLORER_BASE, buildAddressUrl } from './onchain-config'
 import { FACTORY_ABI } from './factory-abi'
-import { formatAddress } from './utils'
+import { formatAddress, getFeeParams } from './utils'
 import { toast } from 'sonner'
 
 type Tab = 'vault' | 'pay' | 'activity'
@@ -108,26 +108,27 @@ export default function App() {
     if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
     setIsCreating(true)
     try {
-      // Pre-estimate gas so wallets that can't auto-estimate (e.g. OKX on Arc
-      // Testnet) still see a valid network fee. Add 20 % buffer.
-      let gasLimit = 800_000n
-      let feeData: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint; gasPrice?: bigint } = {}
+      // Step 1: get live fee params (retries once; throws clear error on failure)
+      let feeParams
       try {
-        const [estimated, fees] = await Promise.all([
-          publicClient.estimateContractGas({
-            address: FACTORY_ADDRESS,
-            abi: FACTORY_ABI,
-            functionName: 'createVault',
-            account: address,
-          }),
-          publicClient.estimateFeesPerGas(),
-        ])
-        gasLimit = (estimated * 120n) / 100n  // +20 %
-        feeData = fees.maxFeePerGas != null
-          ? { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas ?? 0n }
-          : { maxFeePerGas: fees.gasPrice ?? 30_000_000_000n, maxPriorityFeePerGas: 0n }
+        feeParams = await getFeeParams(publicClient)
+      } catch (feeErr) {
+        toast.error((feeErr as Error).message)
+        setIsCreating(false)
+        return
+      }
+
+      // Step 2: estimate gas with +20% buffer
+      let gasLimit = 800_000n
+      try {
+        const estimated = await publicClient.estimateContractGas({
+          address: FACTORY_ADDRESS,
+          abi: FACTORY_ABI,
+          functionName: 'createVault',
+          account: address,
+        })
+        gasLimit = (estimated * 120n) / 100n
       } catch (estErr) {
-        // Estimation itself reverted — decode and show reason, abort
         const msg = (estErr as Error)?.message ?? ''
         toast.error(`Cannot create vault: ${msg.slice(0, 120)}`)
         setIsCreating(false)
@@ -139,8 +140,8 @@ export default function App() {
         abi: FACTORY_ABI,
         functionName: 'createVault',
         gas: gasLimit,
-        maxFeePerGas: feeData.maxFeePerGas,
-        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+        maxFeePerGas: feeParams.maxFeePerGas,
+        maxPriorityFeePerGas: feeParams.maxPriorityFeePerGas,
       })
       toast.info('Creating vault…')
       const receipt = await publicClient.waitForTransactionReceipt({ hash })

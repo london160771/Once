@@ -30,6 +30,13 @@ export const USDC_DECIMALS = 6
 // No vault address is hardcoded — vaults are created per user via createVault().
 export const FACTORY_ADDRESS = '0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7' as `0x${string}`
 
+// ─── Gas floor ─────────────────────────────────────────────────────────────────
+// Arc protocol enforces a minimum base fee. We use this as a floor when
+// building maxFeePerGas in getFeeParams (utils.ts).
+// Testnet: 20 gwei (documented Arc protocol floor).
+// Mainnet: we read eth_gasPrice at runtime and keep 20 as a lower bound only.
+export const MIN_BASE_FEE_GWEI = 20n  // bigint gwei
+
 // ─── Explorer ──────────────────────────────────────────────────────────────────
 export const EXPLORER_BASE =
   NETWORK === 'mainnet'

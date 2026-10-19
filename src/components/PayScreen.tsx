@@ -4,7 +4,7 @@ import { keccak256, encodeAbiParameters, parseAbiParameters, decodeErrorResult }
 import { Loader2, Zap, RefreshCw, CheckCircle2, XCircle, Copy, ExternalLink, MinusCircle } from 'lucide-react'
 import { CHAIN_ID, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
-import { formatUsdc, parseUsdc, parseRevertReason } from '../utils'
+import { formatUsdc, parseUsdc, parseRevertReason, getFeeParams } from '../utils'
 import { toast } from 'sonner'
 
 const glass = {
@@ -94,10 +94,11 @@ export function PayScreen({
     if (!recipient || !amount) { toast.error('Fill in recipient and amount'); return }
     const id = currentIntentId; setLockedIntentId(id); setSingleResult(null); setIsSinglePaying(true)
     const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600)
-    // Pre-fetch fee data so wallets that can't estimate fees (e.g. OKX on Arc Testnet) still show a valid fee
-    const fees = await publicClient.estimateFeesPerGas().catch(() => null)
-    const mfpg = fees?.maxFeePerGas ?? fees?.gasPrice ?? 30_000_000_000n
-    const mpfpg = fees?.maxPriorityFeePerGas ?? 0n
+    // getFeeParams retries once and throws a clear message on failure.
+    let payFee
+    try { payFee = await getFeeParams(publicClient) }
+    catch (feeErr) { setSingleResult({ index: 1, status: 'CANCELLED', reason: (feeErr as Error).message }); toast.error((feeErr as Error).message); setIsSinglePaying(false); return }
+    const { maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg } = payFee
     try {
       const hash = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'pay', args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt], gas: 150_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg })
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
@@ -134,10 +135,17 @@ export function PayScreen({
       | { sent: true; index: number; hash: `0x${string}` }
       | { sent: false; index: number; status: 'CANCELLED' | 'NOT_SENT'; reason?: string }
 
-    // Pre-fetch fee data once for all 5 storm attempts
-    const stormFees = await publicClient.estimateFeesPerGas().catch(() => null)
-    const stormMfpg = stormFees?.maxFeePerGas ?? stormFees?.gasPrice ?? 30_000_000_000n
-    const stormMpfpg = stormFees?.maxPriorityFeePerGas ?? 0n
+    // getFeeParams retries once and throws a clear message on failure.
+    // Fetch ONCE and reuse for all 5 storm attempts.
+    let stormFee
+    try { stormFee = await getFeeParams(publicClient) }
+    catch (feeErr) {
+      toast.error((feeErr as Error).message)
+      setStormResults([{ index: 1, status: 'NOT_SENT', reason: (feeErr as Error).message },
+        ...[2,3,4,5].map(i => ({ index: i, status: 'NOT_SENT' as const }))])
+      setIsStorming(false); return
+    }
+    const { maxFeePerGas: stormMfpg, maxPriorityFeePerGas: stormMpfpg } = stormFee
 
     const sendOutcomes: SendOutcome[] = []
     let cancelledAt: number | null = null
