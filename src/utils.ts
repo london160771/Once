@@ -1,7 +1,36 @@
-import type { PublicClient, Abi } from 'viem'
+import type { PublicClient, Abi, TransactionReceipt } from 'viem'
 import { BaseError, decodeErrorResult, decodeFunctionData, erc20Abi } from 'viem'
 import { MIN_BASE_FEE_GWEI } from './onchain-config'
 import { USDC_DECIMALS } from './onchain-config'
+
+/**
+ * Wait for a transaction receipt with exponential backoff retries.
+ *
+ * Arc mainnet RPC can return HTTP 429 during peak load. This helper retries
+ * up to `maxAttempts` times (default 5) with delays 1s, 2s, 4s, 8s, 16s.
+ * On permanent failure it throws — callers should show PENDING + explorer link.
+ */
+export async function waitForReceiptWithRetry(
+  client: PublicClient,
+  hash: `0x${string}`,
+  maxAttempts = 5,
+): Promise<TransactionReceipt> {
+  let delay = 1_000
+  let lastErr: unknown
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await client.waitForTransactionReceipt({ hash, timeout: 30_000 })
+    } catch (err) {
+      lastErr = err
+      console.error(`[waitForReceiptWithRetry] attempt ${i + 1} failed:`, err)
+      if (i < maxAttempts - 1) {
+        await new Promise(r => setTimeout(r, delay))
+        delay = Math.min(delay * 2, 16_000)
+      }
+    }
+  }
+  throw lastErr
+}
 
 const KNOWN_ERRORS = ['DUPLICATE_INTENT', 'INTENT_EXPIRED', 'OVER_BUDGET', 'NOT_PAYER'] as const
 

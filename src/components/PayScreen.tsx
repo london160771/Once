@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { CHAIN_ID, USDC_ADDRESS, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
-import { formatUsdc, parseUsdc, parseRevertReason, getFeeParams, decodeOnchainRevert } from '../utils'
+import { formatUsdc, parseUsdc, parseRevertReason, getFeeParams, decodeOnchainRevert, waitForReceiptWithRetry } from '../utils'
 import { toast } from 'sonner'
 
 const glass = {
@@ -25,7 +25,7 @@ const glass = {
   } as React.CSSProperties,
 }
 
-export type AttemptStatus = 'PAID' | 'REFUSED' | 'CANCELLED' | 'NOT_SENT'
+export type AttemptStatus = 'PAID' | 'REFUSED' | 'CANCELLED' | 'NOT_SENT' | 'PENDING'
 
 export interface AttemptResult {
   index: number
@@ -153,13 +153,25 @@ export function PayScreen({
     }
     const { maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg } = payFee
 
+    let sentHash: `0x${string}` | undefined
     try {
       const hash = await walletClient.writeContract({
         address: vaultAddress, abi: VAULT_ABI, functionName: 'pay',
         args: [id, recipient as `0x${string}`, parseUsdc(amount), expiresAt],
         gas: 150_000n, maxFeePerGas: mfpg, maxPriorityFeePerGas: mpfpg,
       })
-      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      sentHash = hash
+      // Show hash immediately so user can follow on explorer while we wait
+      setSingleResult({ index: 1, status: 'PENDING', txHash: hash })
+      let receipt
+      try {
+        receipt = await waitForReceiptWithRetry(publicClient, hash)
+      } catch {
+        // Receipt still unknown after retries — show PENDING with explorer link
+        setSingleResult({ index: 1, status: 'PENDING', txHash: hash })
+        toast.info('Transaction sent — check explorer to confirm')
+        return
+      }
       if (receipt.status === 'success') {
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
         toast.success('Payment confirmed'); onActivity(); onTxConfirmed?.()
@@ -172,6 +184,10 @@ export function PayScreen({
       const msg = (err as Error)?.message ?? ''
       if (msg.toLowerCase().includes('user rejected') || msg.toLowerCase().includes('user denied')) {
         setSingleResult({ index: 1, status: 'CANCELLED' }); toast.info('Cancelled')
+      } else if (sentHash) {
+        // Hash was returned but something else failed — keep PENDING
+        setSingleResult({ index: 1, status: 'PENDING', txHash: sentHash })
+        toast.info('Transaction sent — check explorer to confirm')
       } else {
         const hash = (err as { transactionHash?: `0x${string}` })?.transactionHash
         const reason = parseRevertReason(err)
@@ -236,15 +252,17 @@ export function PayScreen({
 
     const broadcastOutcomes = sendOutcomes.filter((o): o is Extract<SendOutcome, { sent: true }> => o.sent)
     const receiptResults = await Promise.all(broadcastOutcomes.map(async o => {
+      let receipt
       try {
-        const receipt = await publicClient.waitForTransactionReceipt({ hash: o.hash })
-        if (receipt.status === 'success')
-          return { index: o.index, status: 'PAID' as const, txHash: o.hash, blockNumber: receipt.blockNumber }
-        const reason = await replayRevert(o.hash)
-        return { index: o.index, status: 'REFUSED' as const, reason, txHash: o.hash, blockNumber: receipt.blockNumber }
-      } catch (err) {
-        return { index: o.index, status: 'REFUSED' as const, reason: parseRevertReason(err), txHash: o.hash }
+        receipt = await waitForReceiptWithRetry(publicClient, o.hash)
+      } catch {
+        // Receipt still unknown after retries — show PENDING with explorer link
+        return { index: o.index, status: 'PENDING' as const, txHash: o.hash }
       }
+      if (receipt.status === 'success')
+        return { index: o.index, status: 'PAID' as const, txHash: o.hash, blockNumber: receipt.blockNumber }
+      const reason = await replayRevert(o.hash)
+      return { index: o.index, status: 'REFUSED' as const, reason, txHash: o.hash, blockNumber: receipt.blockNumber }
     }))
 
     const receiptMap = new Map(receiptResults.map(r => [r.index, r]))
@@ -386,20 +404,23 @@ export function PayScreen({
 }
 
 function AttemptRow({ result, className = '' }: { result: AttemptResult; className?: string }) {
-  const isPaid = result.status === 'PAID'
+  const isPaid    = result.status === 'PAID'
+  const isPending = result.status === 'PENDING'
   const isCancelled = result.status === 'CANCELLED' || result.status === 'NOT_SENT'
+  const isRefused = !isPaid && !isPending && !isCancelled
+
   const hasRealHash = !!result.txHash
-  const bg = isPaid ? 'rgba(26,128,71,0.06)' : isCancelled ? 'rgba(107,101,128,0.06)' : 'rgba(186,43,76,0.05)'
-  const border = isPaid ? 'rgba(26,128,71,0.18)' : isCancelled ? 'rgba(107,101,128,0.15)' : 'rgba(186,43,76,0.12)'
-  const labelColor = isPaid ? 'var(--success)' : isCancelled ? 'var(--muted)' : 'var(--danger)'
-  const label = isPaid ? 'PAID' : result.reason ?? result.status
-  const Icon = isPaid ? CheckCircle2 : isCancelled ? MinusCircle : XCircle
+  const bg = isPaid ? 'rgba(26,128,71,0.06)' : isPending ? 'rgba(99,102,241,0.06)' : isCancelled ? 'rgba(107,101,128,0.06)' : 'rgba(186,43,76,0.05)'
+  const border = isPaid ? 'rgba(26,128,71,0.18)' : isPending ? 'rgba(99,102,241,0.25)' : isCancelled ? 'rgba(107,101,128,0.15)' : 'rgba(186,43,76,0.12)'
+  const labelColor = isPaid ? 'var(--success)' : isPending ? '#6366f1' : isCancelled ? 'var(--muted)' : 'var(--danger)'
+  const label = isPaid ? 'PAID' : isPending ? 'PENDING' : result.reason ?? result.status
+  const Icon = isPaid ? CheckCircle2 : isPending ? Loader2 : isCancelled ? MinusCircle : XCircle
   const blockLabel = result.blockNumber !== undefined ? `block ${result.blockNumber}` : null
   return (
     <div className={`rounded-xl px-3 py-2.5 ${className}`} style={{ background: bg, border: `1px solid ${border}` }}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Icon className="size-4 shrink-0" style={{ color: labelColor }} />
+          <Icon className={`size-4 shrink-0 ${isPending ? 'animate-spin' : ''}`} style={{ color: labelColor }} />
           <span className="text-xs font-medium" style={{ color: 'var(--ink)' }}>
             Attempt {result.index}
             {blockLabel && <span className="ml-1.5 mono" style={{ color: 'var(--subtle)', fontWeight: 400 }}>· {blockLabel}</span>}
@@ -407,10 +428,13 @@ function AttemptRow({ result, className = '' }: { result: AttemptResult; classNa
         </div>
         <span className="mono text-xs font-semibold" style={{ color: labelColor }}>{label}</span>
       </div>
+      {isPending && hasRealHash && (
+        <p className="mt-1 pl-6 text-xs" style={{ color: '#6366f1' }}>Confirming… check explorer</p>
+      )}
       {hasRealHash && (
         <div className="mt-1.5 flex items-center gap-1 pl-6">
           <a href={buildTxUrl(result.txHash!)} target="_blank" rel="noopener noreferrer"
-            className="mono flex items-center gap-1 truncate text-xs" style={{ color: 'var(--accent-hover)' }}>
+            className="mono flex items-center gap-1 truncate text-xs" style={{ color: isRefused ? 'var(--danger)' : isPending ? '#6366f1' : 'var(--accent-hover)' }}>
             {result.txHash!.slice(0, 16)}… <ExternalLink className="size-3 shrink-0" />
           </a>
         </div>

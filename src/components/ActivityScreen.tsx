@@ -12,7 +12,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { usePublicClient } from 'wagmi'
-import { decodeEventLog, type Log } from 'viem'
+import { decodeEventLog, decodeFunctionData, type Log } from 'viem'
 import {
   CheckCircle2, XCircle, ExternalLink, RefreshCw, Loader2,
   MinusCircle, AlertCircle, ArrowDownToLine, Target, Banknote,
@@ -119,6 +119,15 @@ export function ActivityScreen({
     return {}
   }, [publicClient])
 
+  // ── localStorage revert-reason cache ─────────────────────────────────────
+  const CACHE_KEY = `once_revert_cache_${vaultAddress.toLowerCase()}`
+  function loadRevertCache(): Record<string, string> {
+    try { return JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}') } catch { return {} }
+  }
+  function saveRevertCache(cache: Record<string, string>) {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)) } catch { /* ignore quota errors */ }
+  }
+
   const fetchFromApi = useCallback(async () => {
     setLoading(true); setApiError(null)
     try {
@@ -143,34 +152,83 @@ export function ActivityScreen({
         if (!nextParams) break
       }
 
-      // Enrich each tx with Promise.allSettled so one failed decode doesn't abort the list
+      // ── Step 1: identify refused pay() rows that need revert decoding ───────
+      const revertCache = loadRevertCache()
+      const refusedPayRows = allTxs.filter(tx => isPayCall(tx) && tx.status !== 'ok')
+
+      // ── Step 2: multicall paidIntents for all refused rows at once ──────────
+      // One eth_call instead of N sequential ones.
+      const paidMap = new Map<string, boolean>()
+      if (publicClient && refusedPayRows.length > 0) {
+        const intentIds: (`0x${string}` | null)[] = refusedPayRows.map(tx => {
+          if (revertCache[tx.hash.toLowerCase()]) return null  // already cached — skip
+          try {
+            const decoded = decodeFunctionData({ abi: VAULT_ABI, data: (tx.raw_input ?? '0x') as `0x${string}` })
+            if (decoded.functionName === 'pay') return (decoded.args as unknown as [`0x${string}`, ...unknown[]])[0]
+          } catch { /* fall */ }
+          return null
+        })
+        const toQuery = refusedPayRows
+          .map((tx, i) => ({ tx, intentId: intentIds[i] }))
+          .filter((x): x is { tx: BlockscoutTx; intentId: `0x${string}` } => x.intentId !== null)
+        if (toQuery.length > 0) {
+          try {
+            const results = await publicClient.multicall({
+              contracts: toQuery.map(({ intentId }) => ({
+                address: vaultAddress,
+                abi: VAULT_ABI,
+                functionName: 'paidIntents' as const,
+                args: [intentId],
+              })),
+              allowFailure: true,
+            })
+            toQuery.forEach(({ tx }, i) => {
+              const r = results[i]
+              if (r?.status === 'success') paidMap.set(tx.hash.toLowerCase(), r.result as boolean)
+            })
+          } catch { /* multicall failed — fall through to per-row replay */ }
+        }
+      }
+
+      // ── Step 3: enrich each tx with Promise.allSettled ──────────────────────
       const settledResults = await Promise.allSettled(allTxs.map(async (tx): Promise<TxItem> => {
         const blockNumber = safeBlockNumber(tx)
         const ts = tx.timestamp ? Math.floor(new Date(tx.timestamp).getTime() / 1000) : undefined
 
         if (!isPayCall(tx)) {
-          // Non-pay tx — show as neutral info row, never as PAID
-          return {
-            txHash: tx.hash,
-            kind: neutralKind(tx),
-            timestamp: ts,
-            blockNumber,
-            fromChain: true,
-          }
+          return { txHash: tx.hash, kind: neutralKind(tx), timestamp: ts, blockNumber, fromChain: true }
         }
 
         if (tx.status === 'ok') {
           const { amount, to } = await decodePaidLog(tx.hash)
           return { txHash: tx.hash, kind: 'PAID', amount, to, timestamp: ts, blockNumber, fromChain: true }
-        } else {
-          const reason = await replayRevert(tx.hash, tx.revert_reason)
+        }
+
+        // Refused pay() row — try cache first
+        const cacheKey = tx.hash.toLowerCase()
+        if (revertCache[cacheKey]) {
+          return { txHash: tx.hash, kind: 'REFUSED', reason: revertCache[cacheKey], timestamp: ts, blockNumber, fromChain: true }
+        }
+
+        // paidIntents multicall result shortcut
+        const wasPaid = paidMap.get(cacheKey)
+        if (wasPaid === true) {
+          const reason = 'DUPLICATE_INTENT'
+          revertCache[cacheKey] = reason
           return { txHash: tx.hash, kind: 'REFUSED', reason, timestamp: ts, blockNumber, fromChain: true }
         }
+
+        // eth_call replay only for rows not resolved by multicall
+        const reason = await replayRevert(tx.hash, tx.revert_reason)
+        revertCache[cacheKey] = reason
+        return { txHash: tx.hash, kind: 'REFUSED', reason, timestamp: ts, blockNumber, fromChain: true }
       }))
+
+      // Persist updated cache
+      saveRevertCache(revertCache)
 
       const enriched: TxItem[] = settledResults.map((r, i) => {
         if (r.status === 'fulfilled') return r.value
-        // Decode failed for this row — mark as REVERTED with the tx hash we do have
         return {
           txHash: allTxs[i]!.hash,
           kind: 'REFUSED' as TxKind,
@@ -186,7 +244,7 @@ export function ActivityScreen({
       console.error('Blockscout fetch failed:', err)
       setApiError('Could not load history from the explorer. The API may be temporarily unavailable.')
     } finally { setLoading(false) }
-  }, [vaultAddress, decodePaidLog, replayRevert])
+  }, [vaultAddress, decodePaidLog, replayRevert, publicClient])
 
   useEffect(() => { fetchFromApi() }, [refreshTrigger, fetchFromApi])
 

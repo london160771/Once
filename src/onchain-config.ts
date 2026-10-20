@@ -25,17 +25,27 @@ export const RPC_URL_OFFICIAL =
     ? 'https://rpc.mainnet.arc.io'
     : 'https://rpc.testnet.arc.io'
 
-// Same-origin proxy URL — served by Vercel rewrites in production and by
-// vite.config.ts server.proxy in local dev.
-export const RPC_URL_PROXY =
-  typeof window !== 'undefined'
-    ? `${window.location.origin}/rpc/${NETWORK}`
-    : RPC_URL_OFFICIAL
+// Same-origin proxy paths — Vercel rewrites in production, vite.config.ts proxy in dev.
+// Each provider has its own path so load is spread across all four RPCs.
+const _origin = typeof window !== 'undefined' ? window.location.origin : ''
+const _pfx = NETWORK === 'mainnet' ? 'mainnet' : 'testnet'
 
-// Alias: primary RPC for simple single-transport configs (kept for backwards compat).
+export const RPC_PROXY_URLS: string[] = _origin
+  ? [
+      `${_origin}/rpc/${_pfx}`,
+      `${_origin}/rpc/${_pfx}-2`,
+      `${_origin}/rpc/${_pfx}-3`,
+      `${_origin}/rpc/${_pfx}-4`,
+    ]
+  : []
+
+// Primary proxy URL (first provider). Falls back to official when no window (SSR/tests).
+export const RPC_URL_PROXY = RPC_PROXY_URLS[0] ?? RPC_URL_OFFICIAL
+
+// Alias: primary RPC (kept for backwards compat).
 export const RPC_URL = RPC_URL_PROXY
 
-// All official fallback RPC endpoints for the active network (wagmi-config.ts uses these).
+// Direct official URLs — last-resort fallbacks only (may be blocked by ad-blockers).
 export const RPC_FALLBACKS: string[] =
   NETWORK === 'mainnet'
     ? [

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react'
 import {
-  useAccount, useReadContract, useWriteContract,
+  useAccount, useReadContracts, useWriteContract,
   useWaitForTransactionReceipt, useSwitchChain,
   useWalletClient, usePublicClient,
 } from 'wagmi'
@@ -17,7 +17,7 @@ import {
 import { TokenUSDC } from '@web3icons/react'
 import { USDC_ADDRESS, CHAIN_ID, NETWORK, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
-import { formatUsdc, parseUsdc, formatAddress, getFeeParams } from '../utils'
+import { formatUsdc, parseUsdc, formatAddress, getFeeParams, waitForReceiptWithRetry } from '../utils'
 import { useIsOkxWallet } from '../hooks/useIsOkxWallet'
 import { toast } from 'sonner'
 
@@ -81,31 +81,41 @@ export function VaultScreen({
   const [depositAmount, setDepositAmount] = useState('')
   const [budgetAmount, setBudgetAmount] = useState('')
 
-  // ── Contract reads ──────────────────────────────────────────────────────────
+  // ── Contract reads — single multicall for all vault stats ─────────────────
+  // Four reads coalesce into one eth_call via wagmi multicall batching.
 
-  const { data: vaultOwner } = useReadContract({
-    address: vaultAddress, abi: VAULT_ABI, functionName: 'owner', chainId: CHAIN_ID,
+  const { data: vaultReads, refetch: refetchVaultReads } = useReadContracts({
+    contracts: [
+      { address: vaultAddress,  abi: VAULT_ABI,  functionName: 'owner',          chainId: CHAIN_ID },
+      { address: USDC_ADDRESS,  abi: erc20Abi,   functionName: 'balanceOf', args: [vaultAddress], chainId: CHAIN_ID },
+      { address: vaultAddress,  abi: VAULT_ABI,  functionName: 'approvedBudget', chainId: CHAIN_ID },
+      { address: vaultAddress,  abi: VAULT_ABI,  functionName: 'totalPaid',      chainId: CHAIN_ID },
+    ],
+    allowFailure: true,
   })
-  const isOwner = !!(address && vaultOwner && address.toLowerCase() === (vaultOwner as string).toLowerCase())
 
-  const { data: vaultBalance, refetch: refetchBalance } = useReadContract({
-    address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf',
-    args: [vaultAddress], chainId: CHAIN_ID,
-  })
-  const { data: walletBalance } = useReadContract({
-    address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf',
-    args: [address ?? '0x0000000000000000000000000000000000000000'], chainId: CHAIN_ID,
+  // Separate wallet balance read (depends on connected address — can't batch with vault reads)
+  const { data: walletBalanceReads } = useReadContracts({
+    contracts: [
+      {
+        address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf',
+        args: [address ?? '0x0000000000000000000000000000000000000000'],
+        chainId: CHAIN_ID,
+      },
+    ],
+    allowFailure: true,
     query: { enabled: !!address },
   })
-  const { data: approvedBudget, refetch: refetchBudget } = useReadContract({
-    address: vaultAddress, abi: VAULT_ABI, functionName: 'approvedBudget', chainId: CHAIN_ID,
-  })
-  const { data: totalPaid, refetch: refetchPaid } = useReadContract({
-    address: vaultAddress, abi: VAULT_ABI, functionName: 'totalPaid', chainId: CHAIN_ID,
-  })
 
+  const vaultOwner     = vaultReads?.[0]?.result as `0x${string}` | undefined
+  const vaultBalance   = vaultReads?.[1]?.result as bigint | undefined
+  const approvedBudget = vaultReads?.[2]?.result as bigint | undefined
+  const totalPaid      = vaultReads?.[3]?.result as bigint | undefined
+  const walletBalance  = walletBalanceReads?.[0]?.result as bigint | undefined
+
+  const isOwner = !!(address && vaultOwner && address.toLowerCase() === vaultOwner.toLowerCase())
   const remaining = (approvedBudget ?? 0n) - (totalPaid ?? 0n)
-  const refetchAll = () => { refetchBalance(); refetchBudget(); refetchPaid(); onTxConfirmed?.() }
+  const refetchAll = () => { void refetchVaultReads(); onTxConfirmed?.() }
 
   // Expose refetchAll to parent via ref so App.tsx can trigger it after Pay/Storm
   const refetchAllRef = useRef(refetchAll)
@@ -204,11 +214,11 @@ export function VaultScreen({
 
       toast.info('Step 1/2: Setting budget to totalPaid…')
       const h1 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'setBudget', args: [totalPaid], gas: 120_000n, maxFeePerGas, maxPriorityFeePerGas })
-      await publicClient.waitForTransactionReceipt({ hash: h1 })
+      await waitForReceiptWithRetry(publicClient, h1)
       setCloseOutHashes(h => ({ ...h, setBudget: h1 })); toast.success('Budget locked')
       toast.info('Step 2/2: Withdrawing unspent USDC…')
       const h2 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'withdrawUnspent', gas: 120_000n, maxFeePerGas, maxPriorityFeePerGas })
-      await publicClient.waitForTransactionReceipt({ hash: h2 })
+      await waitForReceiptWithRetry(publicClient, h2)
       setCloseOutHashes(h => ({ ...h, withdraw: h2 })); toast.success('Close out complete!')
       refetchAll()
     } catch (err) {
