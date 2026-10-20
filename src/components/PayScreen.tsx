@@ -46,10 +46,12 @@ export function PayScreen({
   vaultAddress,
   onActivity,
   onStormResults,
+  onTxConfirmed,
 }: {
   vaultAddress: `0x${string}`
   onActivity: () => void
   onStormResults: (results: AttemptResult[]) => void
+  onTxConfirmed?: () => void
 }) {
   const { address, chainId, isConnected } = useAccount()
   const { switchChain } = useSwitchChain()
@@ -160,7 +162,7 @@ export function PayScreen({
       const receipt = await publicClient.waitForTransactionReceipt({ hash })
       if (receipt.status === 'success') {
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
-        toast.success('Payment confirmed'); onActivity()
+        toast.success('Payment confirmed'); onActivity(); onTxConfirmed?.()
       } else {
         const reason = await replayRevert(hash)
         setSingleResult({ index: 1, status: 'REFUSED', reason, txHash: hash, blockNumber: receipt.blockNumber })
@@ -252,12 +254,12 @@ export function PayScreen({
       return r ?? { index: o.index, status: 'REFUSED' as const, reason: 'REVERTED', txHash: o.hash }
     })
 
-    if (finalResults.some(r => r.status === 'PAID')) onActivity()
+    if (finalResults.some(r => r.status === 'PAID')) { onActivity(); onTxConfirmed?.() }
     setStormResults(finalResults); onStormResults(finalResults); setIsStorming(false)
     // Auto-regenerate for next payout after storm
     regenerate(true)
   }, [isConnected, walletClient, publicClient, wrongChain, recipient, amount,
-      currentIntentId, switchChain, onActivity, onStormResults, vaultAddress, regenerate])
+      currentIntentId, switchChain, onActivity, onStormResults, onTxConfirmed, vaultAddress, regenerate])
 
   const regenerateManual = () => regenerate(false)
   const copyId = () => { navigator.clipboard.writeText(currentIntentId); toast.info('Intent ID copied') }

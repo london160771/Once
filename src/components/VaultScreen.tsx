@@ -3,7 +3,7 @@
  * Receives the selected vault address as a prop (no hardcoded address).
  */
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   useAccount, useReadContract, useWriteContract,
   useWaitForTransactionReceipt, useSwitchChain,
@@ -12,12 +12,13 @@ import {
 import { erc20Abi, decodeErrorResult } from 'viem'
 import {
   Loader2, ShieldCheck, PiggyBank, Target, TrendingUp,
-  ArrowDownToLine, PackageCheck, ExternalLink, BadgeCheck, BadgeX,
+  ArrowDownToLine, PackageCheck, ExternalLink, BadgeCheck, BadgeX, AlertCircle,
 } from 'lucide-react'
 import { TokenUSDC } from '@web3icons/react'
 import { USDC_ADDRESS, CHAIN_ID, NETWORK, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, parseUsdc, formatAddress, getFeeParams } from '../utils'
+import { useIsOkxWallet } from '../hooks/useIsOkxWallet'
 import { toast } from 'sonner'
 
 // ─── Error decoding ────────────────────────────────────────────────────────────
@@ -61,12 +62,21 @@ const glass = {
   } as React.CSSProperties,
 }
 
-export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
+export function VaultScreen({
+  vaultAddress,
+  onTxConfirmed,
+  refetchRef,
+}: {
+  vaultAddress: `0x${string}`
+  onTxConfirmed?: () => void
+  refetchRef?: React.MutableRefObject<(() => void) | null>
+}) {
   const { address, chainId, isConnected } = useAccount()
   const { switchChain } = useSwitchChain()
   const { data: walletClient } = useWalletClient({ chainId: CHAIN_ID })
   const publicClient = usePublicClient({ chainId: CHAIN_ID })
   const wrongChain = isConnected && chainId !== CHAIN_ID
+  const isOkx = useIsOkxWallet()
 
   const [depositAmount, setDepositAmount] = useState('')
   const [budgetAmount, setBudgetAmount] = useState('')
@@ -95,7 +105,14 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
   })
 
   const remaining = (approvedBudget ?? 0n) - (totalPaid ?? 0n)
-  const refetchAll = () => { refetchBalance(); refetchBudget(); refetchPaid() }
+  const refetchAll = () => { refetchBalance(); refetchBudget(); refetchPaid(); onTxConfirmed?.() }
+
+  // Expose refetchAll to parent via ref so App.tsx can trigger it after Pay/Storm
+  const refetchAllRef = useRef(refetchAll)
+  refetchAllRef.current = refetchAll
+  useEffect(() => {
+    if (refetchRef) refetchRef.current = () => refetchAllRef.current()
+  }, [refetchRef])
 
   // ── Approve + Fund ──────────────────────────────────────────────────────────
 
@@ -227,6 +244,17 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
         <StatCard icon={<TrendingUp className="size-4" style={{ color: 'var(--success)' }} />} label="Total Paid" value={formatUsdc(totalPaid)} sub="paid out" />
         <StatCard icon={<ShieldCheck className="size-4" style={{ color: remaining > 0n ? 'var(--success)' : 'var(--muted)' }} />} label="Remaining Budget" value={formatUsdc(remaining)} sub="available" highlight={remaining > 0n} />
       </div>
+
+      {/* OKX Wallet warning */}
+      {isOkx && isConnected && (
+        <div className="flex items-start gap-3 rounded-2xl px-4 py-3 text-xs"
+          style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.35)', color: '#92400e' }}>
+          <AlertCircle className="size-4 mt-0.5 shrink-0 text-amber-500" />
+          <span>
+            <span className="font-semibold">OKX Wallet</span> currently shows Arc USDC approvals as 0 USDC and may fail to estimate fees on Arc. The real amount is shown here. For the smoothest experience use <span className="font-semibold">Rabby</span> or <span className="font-semibold">MetaMask</span>.
+          </span>
+        </div>
+      )}
 
       {/* Deposit */}
       <section style={glass.card} className="p-5">

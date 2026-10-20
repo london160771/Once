@@ -42,7 +42,9 @@ interface BlockscoutTx {
   hash: string
   status: 'ok' | 'error' | null
   timestamp: string
-  block: number
+  // mainnet Blockscout uses block_number; testnet uses block — accept both
+  block?: number | null
+  block_number?: number | null
   method: string | null
   revert_reason?: string | null
   raw_input?: string
@@ -52,6 +54,13 @@ interface BlockscoutTx {
 interface BlockscoutResponse {
   items: BlockscoutTx[]
   next_page_params?: Record<string, string | number> | null
+}
+
+/** Safe block number extraction — handles mainnet (block_number) and testnet (block). */
+function safeBlockNumber(tx: BlockscoutTx): bigint | undefined {
+  const n = tx.block_number ?? tx.block
+  if (n == null || Number.isNaN(n)) return undefined
+  try { return BigInt(n) } catch { return undefined }
 }
 
 /** Returns true if a tx is a pay() call based on selector or decoded method name. */
@@ -136,7 +145,7 @@ export function ActivityScreen({
 
       // Enrich each tx with Promise.allSettled so one failed decode doesn't abort the list
       const settledResults = await Promise.allSettled(allTxs.map(async (tx): Promise<TxItem> => {
-        const blockNumber = BigInt(tx.block)
+        const blockNumber = safeBlockNumber(tx)
         const ts = tx.timestamp ? Math.floor(new Date(tx.timestamp).getTime() / 1000) : undefined
 
         if (!isPayCall(tx)) {
@@ -166,7 +175,7 @@ export function ActivityScreen({
           txHash: allTxs[i]!.hash,
           kind: 'REFUSED' as TxKind,
           reason: 'REVERTED',
-          blockNumber: BigInt(allTxs[i]!.block),
+          blockNumber: safeBlockNumber(allTxs[i]!),
           fromChain: true,
         }
       })

@@ -13,7 +13,19 @@
 
 Each user deploys their own `OncePayoutVault` through the factory. No vault address is hardcoded — call `createVault()` or connect your wallet in the app.
 
-> **Note:** OKX Wallet cannot estimate fees for `createVault()` on Arc. Use Rabby or MetaMask to create a vault.
+---
+
+## Wallet compatibility
+
+| Wallet | Status |
+|---|---|
+| **Rabby** | Fully supported — recommended |
+| **MetaMask** | Fully supported |
+| **OKX Wallet** | Partial — see note below |
+
+**OKX Wallet and Arc USDC:** OKX Wallet misreads the Arc USDC token (`0x3600000000000000000000000000000000000000`, 6 decimals). It displays approval amounts as **0 USDC** in the wallet confirmation dialog, even when the app sends the exact amount (e.g. `approve(vault, 1000000)` for 1.00 USDC). This is an OKX display issue — the on-chain approval is correct and the app shows the real amount.
+
+OKX Wallet may also fail to estimate gas for `createVault()` on Arc. If this happens the app will show an error toast and will not open the wallet — no transaction is sent. Switch to Rabby or MetaMask to create a vault, then reconnect with OKX Wallet for day-to-day use.
 
 ---
 

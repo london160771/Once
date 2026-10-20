@@ -12,7 +12,7 @@
  * watchAccount re-runs vault list on account/chain change.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ConnectKitButton } from 'connectkit'
 import {
   useAccount, usePublicClient, useWalletClient,
@@ -20,13 +20,14 @@ import {
 } from 'wagmi'
 import { watchAccount } from '@wagmi/core'
 import { decodeEventLog, type Log } from 'viem'
-import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, Eye } from 'lucide-react'
+import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, Eye, AlertCircle } from 'lucide-react'
 import { VaultScreen } from './components/VaultScreen'
 import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
 import { FACTORY_ADDRESS, CHAIN_ID, NETWORK, buildAddressUrl } from './onchain-config'
 import { FACTORY_ABI } from './factory-abi'
 import { formatAddress, getFeeParams } from './utils'
+import { useIsOkxWallet } from './hooks/useIsOkxWallet'
 import { toast } from 'sonner'
 import { wagmiConfig } from './wagmi-config'
 
@@ -78,6 +79,10 @@ export default function App() {
 
   const triggerActivity = () => setActivityTrigger(n => n + 1)
   const handleStormResults = (results: AttemptResult[]) => { setStormResults(results); triggerActivity() }
+
+  // Vault stat refresh — VaultScreen exposes its refetchAll via this ref
+  const vaultRefetchRef = useRef<(() => void) | null>(null)
+  const refetchVaultStats = useCallback(() => { vaultRefetchRef.current?.() }, [])
 
   // ── Read vaults for the connected wallet ─────────────────────────────────
 
@@ -193,13 +198,15 @@ export default function App() {
     } finally { setIsCreating(false) }
   }
 
+  const isOkx = useIsOkxWallet()
+
   // ── Render helpers ──────────────────────────────────────────────────────
 
   const tabBar = (
     <div className="mb-5 grid grid-cols-3 gap-1 rounded-2xl p-1"
       style={{ background: 'var(--surface-muted)', border: '1px solid var(--border)' }}>
       {TABS.map(({ id, label, Icon }) => (
-        <button key={id} onClick={() => setTab(id)}
+        <button key={id} onClick={() => { setTab(id); refetchVaultStats() }}
           className="flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold transition-all"
           style={tab === id
             ? { background: '#fff', color: 'var(--ink)', boxShadow: '0 1px 4px rgba(18,45,69,0.10)' }
@@ -220,7 +227,11 @@ export default function App() {
         </div>
       )}
       <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
-        <VaultScreen vaultAddress={selectedVault!} />
+        <VaultScreen
+          vaultAddress={selectedVault!}
+          onTxConfirmed={refetchVaultStats}
+          refetchRef={vaultRefetchRef}
+        />
       </div>
       <div style={{ display: tab === 'pay' ? 'block' : 'none' }}>
         {readOnly
@@ -228,7 +239,12 @@ export default function App() {
               <Send className="size-8 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
               <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Connect wallet to pay</p>
             </div>
-          : <PayScreen vaultAddress={selectedVault!} onActivity={triggerActivity} onStormResults={handleStormResults} />
+          : <PayScreen
+              vaultAddress={selectedVault!}
+              onActivity={triggerActivity}
+              onStormResults={handleStormResults}
+              onTxConfirmed={refetchVaultStats}
+            />
         }
       </div>
       <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
@@ -300,6 +316,13 @@ export default function App() {
               <div className="rounded-2xl p-5 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <p className="text-sm font-semibold mb-1" style={{ color: 'var(--ink)' }}>You don't have a vault yet</p>
                 <p className="text-xs mb-4" style={{ color: 'var(--muted)' }}>Deploy your own OncePayoutVault — owned by your wallet, funded by you.</p>
+                {isOkx && (
+                  <div className="mb-4 flex items-start gap-2 rounded-xl px-3 py-2.5 text-xs text-left"
+                    style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.35)', color: '#92400e' }}>
+                    <AlertCircle className="size-3.5 mt-0.5 shrink-0 text-amber-500" />
+                    <span><span className="font-semibold">OKX Wallet</span> may fail to estimate fees for creating a vault on Arc. Use <span className="font-semibold">Rabby</span> or <span className="font-semibold">MetaMask</span> for the smoothest experience.</span>
+                  </div>
+                )}
                 <button onClick={handleCreateVault} disabled={isCreating}
                   className="inline-flex items-center gap-2 rounded-2xl px-6 py-3 text-sm font-semibold text-white transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
                   style={{ background: 'var(--accent)' }}>
