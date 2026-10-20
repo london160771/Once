@@ -17,11 +17,39 @@ export const CHAIN = NETWORK === 'mainnet' ? arc : arcTestnet
 export const CHAIN_ID = CHAIN.id as number  // 5042 on mainnet, 5042002 on testnet
 
 // ─── RPC endpoints ─────────────────────────────────────────────────────────────
-// Official Arc RPC endpoints — used in wagmi transport (wagmi-config.ts).
-export const RPC_URL =
+// In the browser: use a same-origin proxy so ad-blockers (Brave Shields etc.)
+// don't block requests to rpc.mainnet.arc.io / rpc.testnet.arc.io.
+// In Node / SSR contexts (no window): fall back to the official RPC directly.
+export const RPC_URL_OFFICIAL =
   NETWORK === 'mainnet'
     ? 'https://rpc.mainnet.arc.io'
     : 'https://rpc.testnet.arc.io'
+
+// Same-origin proxy URL — served by Vercel rewrites in production and by
+// vite.config.ts server.proxy in local dev.
+export const RPC_URL_PROXY =
+  typeof window !== 'undefined'
+    ? `${window.location.origin}/rpc/${NETWORK}`
+    : RPC_URL_OFFICIAL
+
+// Alias: primary RPC for simple single-transport configs (kept for backwards compat).
+export const RPC_URL = RPC_URL_PROXY
+
+// All official fallback RPC endpoints for the active network (wagmi-config.ts uses these).
+export const RPC_FALLBACKS: string[] =
+  NETWORK === 'mainnet'
+    ? [
+        'https://rpc.mainnet.arc.io',
+        'https://rpc.blockdaemon.mainnet.arc.io',
+        'https://rpc.drpc.mainnet.arc.io',
+        'https://rpc.quicknode.mainnet.arc.io',
+      ]
+    : [
+        'https://rpc.testnet.arc.io',
+        'https://rpc.blockdaemon.testnet.arc.io',
+        'https://rpc.drpc.testnet.arc.io',
+        'https://rpc.quicknode.testnet.arc.io',
+      ]
 
 // ─── USDC (ERC-20, 6 decimals) ─────────────────────────────────────────────────
 // On Arc, USDC is the native gas token AND an ERC-20 at this fixed predeploy address.
@@ -49,3 +77,13 @@ export const EXPLORER_BASE =
 
 export const buildTxUrl = (hash: string) => `${EXPLORER_BASE}/tx/${hash}`
 export const buildAddressUrl = (addr: string) => `${EXPLORER_BASE}/address/${addr}`
+
+// ─── Explorer API base (ad-block safe) ────────────────────────────────────────
+// In production (Vercel) and local dev (Vite proxy), use same-origin paths.
+// /explorer-api  → https://explorer.arc.io/api     (mainnet)
+// /explorer-api-testnet → https://explorer.testnet.arc.io/api  (testnet)
+// Falls back to direct URL in non-browser environments.
+export const EXPLORER_API_BASE =
+  typeof window !== 'undefined'
+    ? `${window.location.origin}/${NETWORK === 'mainnet' ? 'explorer-api' : 'explorer-api-testnet'}`
+    : `${EXPLORER_BASE}/api`

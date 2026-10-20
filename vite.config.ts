@@ -15,5 +15,27 @@ export default defineConfig({
   },
   server: {
     allowedHosts: true,
+    proxy: {
+      '/rpc/mainnet': {
+        target: 'https://rpc.mainnet.arc.io',
+        changeOrigin: true,
+        rewrite: () => '/',
+      },
+      '/rpc/testnet': {
+        target: 'https://rpc.testnet.arc.io',
+        changeOrigin: true,
+        rewrite: () => '/',
+      },
+      '/explorer-api': {
+        target: 'https://explorer.arc.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/explorer-api/, '/api'),
+      },
+      '/explorer-api-testnet': {
+        target: 'https://explorer.testnet.arc.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/explorer-api-testnet/, '/api'),
+      },
+    },
   },
 })

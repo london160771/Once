@@ -17,7 +17,7 @@ import {
   CheckCircle2, XCircle, ExternalLink, RefreshCw, Loader2,
   MinusCircle, AlertCircle, ArrowDownToLine, Target, Banknote,
 } from 'lucide-react'
-import { CHAIN_ID, EXPLORER_BASE, buildTxUrl } from '../onchain-config'
+import { CHAIN_ID, EXPLORER_BASE, EXPLORER_API_BASE, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, formatAddress, formatTimestamp, decodeOnchainRevert } from '../utils'
 import type { AttemptResult } from './PayScreen'
@@ -121,7 +121,7 @@ export function ActivityScreen({
         if (nextParams) {
           Object.entries(nextParams).forEach(([k, v]) => qs.set(k, String(v)))
         }
-        const url = `${EXPLORER_BASE}/api/v2/addresses/${vaultAddress}/transactions?${qs}`
+        const url = `${EXPLORER_API_BASE}/v2/addresses/${vaultAddress}/transactions?${qs}`
         const res = await fetch(url)
         if (!res.ok) {
           const body = await res.text().catch(() => '')

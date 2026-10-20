@@ -131,21 +131,32 @@ export interface FeeParams {
  * The caller must catch this and show it as a toast — never open the wallet.
  */
 export async function getFeeParams(publicClient: PublicClient): Promise<FeeParams> {
+  /** Try estimateFeesPerGas, then fall back to getGasPrice as a second source. */
   async function attempt(): Promise<FeeParams> {
-    const fees = await publicClient.estimateFeesPerGas()
-
-    // estimateFeesPerGas returns either EIP-1559 fields or a legacy gasPrice.
-    // Normalise to EIP-1559.
     let estimatedMax: bigint
     let estimatedPriority: bigint
 
-    if (fees.maxFeePerGas != null) {
-      estimatedMax = fees.maxFeePerGas
-      estimatedPriority = fees.maxPriorityFeePerGas ?? ONE_GWEI
-    } else {
-      // Legacy chain — treat gasPrice as both base and priority ceiling
-      estimatedMax = fees.gasPrice ?? 0n
-      estimatedPriority = ONE_GWEI
+    try {
+      const fees = await publicClient.estimateFeesPerGas()
+      if (fees.maxFeePerGas != null) {
+        estimatedMax = fees.maxFeePerGas
+        estimatedPriority = fees.maxPriorityFeePerGas ?? ONE_GWEI
+      } else {
+        // Legacy chain — treat gasPrice as both base and priority ceiling
+        estimatedMax = fees.gasPrice ?? 0n
+        estimatedPriority = ONE_GWEI
+      }
+    } catch (e1) {
+      console.error('[getFeeParams] estimateFeesPerGas failed:', e1)
+      // Second source: getGasPrice
+      try {
+        const gasPrice = await publicClient.getGasPrice()
+        estimatedMax = gasPrice
+        estimatedPriority = ONE_GWEI
+      } catch (e2) {
+        console.error('[getFeeParams] getGasPrice also failed:', e2)
+        throw e2
+      }
     }
 
     const priority = estimatedPriority > ONE_GWEI ? estimatedPriority : ONE_GWEI
@@ -157,12 +168,14 @@ export async function getFeeParams(publicClient: PublicClient): Promise<FeeParam
 
   try {
     return await attempt()
-  } catch {
+  } catch (e) {
+    console.error('[getFeeParams] attempt 1 failed:', e)
     // Retry once after 1 second
     await new Promise(r => setTimeout(r, 1000))
     try {
       return await attempt()
-    } catch {
+    } catch (e2) {
+      console.error('[getFeeParams] attempt 2 failed — giving up:', e2)
       throw new Error("Couldn't get the network fee. Try again.")
     }
   }

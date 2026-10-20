@@ -1,0 +1,20 @@
+{
+  "rewrites": [
+    {
+      "source": "/rpc/mainnet",
+      "destination": "https://rpc.mainnet.arc.io"
+    },
+    {
+      "source": "/rpc/testnet",
+      "destination": "https://rpc.testnet.arc.io"
+    },
+    {
+      "source": "/explorer-api/:path*",
+      "destination": "https://explorer.arc.io/api/:path*"
+    },
+    {
+      "source": "/explorer-api-testnet/:path*",
+      "destination": "https://explorer.testnet.arc.io/api/:path*"
+    }
+  ]
+}
