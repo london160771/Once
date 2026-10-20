@@ -174,7 +174,10 @@ export function PayScreen({
       }
       if (receipt.status === 'success') {
         setSingleResult({ index: 1, status: 'PAID', txHash: hash, blockNumber: receipt.blockNumber })
-        toast.success('Payment confirmed'); onActivity(); onTxConfirmed?.()
+        toast.success('Payment confirmed')
+        // Wrap callbacks so a refresh error can never overwrite the confirmed PAID result
+        try { onActivity() } catch { /* ignore */ }
+        try { onTxConfirmed?.() } catch { /* ignore */ }
       } else {
         const reason = await replayRevert(hash)
         setSingleResult({ index: 1, status: 'REFUSED', reason, txHash: hash, blockNumber: receipt.blockNumber })
@@ -272,8 +275,13 @@ export function PayScreen({
       return r ?? { index: o.index, status: 'REFUSED' as const, reason: 'REVERTED', txHash: o.hash }
     })
 
-    if (finalResults.some(r => r.status === 'PAID')) { onActivity(); onTxConfirmed?.() }
-    setStormResults(finalResults); onStormResults(finalResults); setIsStorming(false)
+    if (finalResults.some(r => r.status === 'PAID')) {
+      try { onActivity() } catch { /* ignore */ }
+      try { onTxConfirmed?.() } catch { /* ignore */ }
+    }
+    setStormResults(finalResults)
+    try { onStormResults(finalResults) } catch { /* ignore */ }
+    setIsStorming(false)
     // Auto-regenerate for next payout after storm
     regenerate(true)
   }, [isConnected, walletClient, publicClient, wrongChain, recipient, amount,

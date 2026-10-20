@@ -64,11 +64,9 @@ const glass = {
 
 export function VaultScreen({
   vaultAddress,
-  onTxConfirmed,
   refetchRef,
 }: {
   vaultAddress: `0x${string}`
-  onTxConfirmed?: () => void
   refetchRef?: React.MutableRefObject<(() => void) | null>
 }) {
   const { address, chainId, isConnected } = useAccount()
@@ -115,7 +113,8 @@ export function VaultScreen({
 
   const isOwner = !!(address && vaultOwner && address.toLowerCase() === vaultOwner.toLowerCase())
   const remaining = (approvedBudget ?? 0n) - (totalPaid ?? 0n)
-  const refetchAll = () => { void refetchVaultReads(); onTxConfirmed?.() }
+  // refetchAll only refreshes local vault reads — never calls back into App to avoid loops.
+  const refetchAll = () => { void refetchVaultReads() }
 
   // Expose refetchAll to parent via ref so App.tsx can trigger it after Pay/Storm
   const refetchAllRef = useRef(refetchAll)
@@ -149,7 +148,10 @@ export function VaultScreen({
   }, [approveSuccess, pendingFundAmount]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (fundSuccess && fundHash) { refetchAll(); setDepositAmount(''); toast.success('Deposited!') }
+    if (fundSuccess && fundHash) {
+      try { refetchAll() } catch { /* ignore refresh errors */ }
+      setDepositAmount(''); toast.success('Deposited!')
+    }
   }, [fundSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -172,7 +174,10 @@ export function VaultScreen({
   }
 
   useEffect(() => {
-    if (budgetSuccess) { refetchAll(); setBudgetAmount(''); toast.success('Budget updated!') }
+    if (budgetSuccess) {
+      try { refetchAll() } catch { /* ignore refresh errors */ }
+      setBudgetAmount(''); toast.success('Budget updated!')
+    }
   }, [budgetSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -191,7 +196,10 @@ export function VaultScreen({
   }
 
   useEffect(() => {
-    if (withdrawSuccess) { refetchAll(); toast.success('Unspent funds withdrawn!') }
+    if (withdrawSuccess) {
+      try { refetchAll() } catch { /* ignore refresh errors */ }
+      toast.success('Unspent funds withdrawn!')
+    }
   }, [withdrawSuccess]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -220,7 +228,7 @@ export function VaultScreen({
       const h2 = await walletClient.writeContract({ address: vaultAddress, abi: VAULT_ABI, functionName: 'withdrawUnspent', gas: 120_000n, maxFeePerGas, maxPriorityFeePerGas })
       await waitForReceiptWithRetry(publicClient, h2)
       setCloseOutHashes(h => ({ ...h, withdraw: h2 })); toast.success('Close out complete!')
-      refetchAll()
+      try { refetchAll() } catch { /* ignore refresh errors — close out itself succeeded */ }
     } catch (err) {
       const r = decodeWriteError(err); if (r !== 'CANCELLED') toast.error(`Close out failed: ${r}`)
     } finally { setIsClosingOut(false) }

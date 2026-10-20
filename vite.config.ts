@@ -4,15 +4,14 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import path from 'path'
 
 // RPC proxy targets for dev server — mirrors vercel.json rewrites
+// dRPC removed — returns 500/502 through the proxy
 const rpcProxies: Record<string, string> = {
   '/rpc/mainnet':   'https://rpc.mainnet.arc.io',
   '/rpc/mainnet-2': 'https://rpc.blockdaemon.mainnet.arc.io',
-  '/rpc/mainnet-3': 'https://rpc.drpc.mainnet.arc.io',
-  '/rpc/mainnet-4': 'https://rpc.quicknode.mainnet.arc.io',
+  '/rpc/mainnet-3': 'https://rpc.quicknode.mainnet.arc.io',
   '/rpc/testnet':   'https://rpc.testnet.arc.io',
   '/rpc/testnet-2': 'https://rpc.blockdaemon.testnet.arc.io',
-  '/rpc/testnet-3': 'https://rpc.drpc.testnet.arc.io',
-  '/rpc/testnet-4': 'https://rpc.quicknode.testnet.arc.io',
+  '/rpc/testnet-3': 'https://rpc.quicknode.testnet.arc.io',
 }
 
 export default defineConfig({

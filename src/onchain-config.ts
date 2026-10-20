@@ -30,12 +30,12 @@ export const RPC_URL_OFFICIAL =
 const _origin = typeof window !== 'undefined' ? window.location.origin : ''
 const _pfx = NETWORK === 'mainnet' ? 'mainnet' : 'testnet'
 
+// 3 proxy paths: arc.io, blockdaemon, quicknode (dRPC removed — 500/502 through proxy)
 export const RPC_PROXY_URLS: string[] = _origin
   ? [
       `${_origin}/rpc/${_pfx}`,
       `${_origin}/rpc/${_pfx}-2`,
       `${_origin}/rpc/${_pfx}-3`,
-      `${_origin}/rpc/${_pfx}-4`,
     ]
   : []
 
@@ -46,18 +46,17 @@ export const RPC_URL_PROXY = RPC_PROXY_URLS[0] ?? RPC_URL_OFFICIAL
 export const RPC_URL = RPC_URL_PROXY
 
 // Direct official URLs — last-resort fallbacks only (may be blocked by ad-blockers).
+// dRPC removed from fallbacks — returns 500/502 through the proxy
 export const RPC_FALLBACKS: string[] =
   NETWORK === 'mainnet'
     ? [
         'https://rpc.mainnet.arc.io',
         'https://rpc.blockdaemon.mainnet.arc.io',
-        'https://rpc.drpc.mainnet.arc.io',
         'https://rpc.quicknode.mainnet.arc.io',
       ]
     : [
         'https://rpc.testnet.arc.io',
         'https://rpc.blockdaemon.testnet.arc.io',
-        'https://rpc.drpc.testnet.arc.io',
         'https://rpc.quicknode.testnet.arc.io',
       ]
 

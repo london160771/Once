@@ -218,7 +218,6 @@ export default function App() {
       <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
         <VaultScreen
           vaultAddress={selectedVault!}
-          onTxConfirmed={refetchVaultStats}
           refetchRef={vaultRefetchRef}
         />
       </div>

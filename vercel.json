@@ -2,12 +2,10 @@
   "rewrites": [
     { "source": "/rpc/mainnet",   "destination": "https://rpc.mainnet.arc.io" },
     { "source": "/rpc/mainnet-2", "destination": "https://rpc.blockdaemon.mainnet.arc.io" },
-    { "source": "/rpc/mainnet-3", "destination": "https://rpc.drpc.mainnet.arc.io" },
-    { "source": "/rpc/mainnet-4", "destination": "https://rpc.quicknode.mainnet.arc.io" },
+    { "source": "/rpc/mainnet-3", "destination": "https://rpc.quicknode.mainnet.arc.io" },
     { "source": "/rpc/testnet",   "destination": "https://rpc.testnet.arc.io" },
     { "source": "/rpc/testnet-2", "destination": "https://rpc.blockdaemon.testnet.arc.io" },
-    { "source": "/rpc/testnet-3", "destination": "https://rpc.drpc.testnet.arc.io" },
-    { "source": "/rpc/testnet-4", "destination": "https://rpc.quicknode.testnet.arc.io" },
+    { "source": "/rpc/testnet-3", "destination": "https://rpc.quicknode.testnet.arc.io" },
     { "source": "/explorer-api/:path*",         "destination": "https://explorer.arc.io/api/:path*" },
     { "source": "/explorer-api-testnet/:path*", "destination": "https://explorer.testnet.arc.io/api/:path*" }
   ]
