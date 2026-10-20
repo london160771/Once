@@ -96,7 +96,7 @@ Three screens, accessible via tab bar:
 
 | Screen | What it does |
 |---|---|
-| **Vault** | Connect wallet, deposit USDC, set budget, view balance / budget / totalPaid / remaining |
+| **Vault** | Deposit USDC, set budget, view balance / budget / totalPaid / remaining |
 | **Pay** | Enter recipient and amount, auto-generate an `intentId`, send a payment. "Retry Storm" fires the same intent 5× and shows which succeeded and which were refused with their reason code |
 | **Activity** | Onchain history from the Arc explorer API — pay() calls (PAID and REFUSED), plus neutral rows for deposit/budget/withdraw transactions |
 

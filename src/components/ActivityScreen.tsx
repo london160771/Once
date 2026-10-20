@@ -120,12 +120,29 @@ export function ActivityScreen({
   }, [publicClient])
 
   // ── localStorage revert-reason cache ─────────────────────────────────────
+  // Only definite reason codes are cached — never fallback labels like 'REVERTED'.
+  const DEFINITE_CODES = new Set([
+    'DUPLICATE_INTENT', 'OVER_BUDGET', 'INTENT_EXPIRED', 'NOT_PAYER', 'INSUFFICIENT_VAULT_BALANCE',
+  ])
   const CACHE_KEY = `once_revert_cache_${vaultAddress.toLowerCase()}`
   function loadRevertCache(): Record<string, string> {
-    try { return JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}') } catch { return {} }
+    try {
+      const raw: Record<string, string> = JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}')
+      // Drop any entries that are not a definite code (e.g. stale 'REVERTED' entries)
+      const clean: Record<string, string> = {}
+      for (const [k, v] of Object.entries(raw)) {
+        if (DEFINITE_CODES.has(v)) clean[k] = v
+      }
+      return clean
+    } catch { return {} }
   }
   function saveRevertCache(cache: Record<string, string>) {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)) } catch { /* ignore quota errors */ }
+    // Only persist definite codes
+    const toSave: Record<string, string> = {}
+    for (const [k, v] of Object.entries(cache)) {
+      if (DEFINITE_CODES.has(v)) toSave[k] = v
+    }
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(toSave)) } catch { /* ignore quota errors */ }
   }
 
   const fetchFromApi = useCallback(async () => {

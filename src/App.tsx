@@ -6,10 +6,11 @@
  * 2. App reads getVaults(connectedWallet) from the factory.
  * 3. No vaults → "Create my vault" button.
  * 4. One or more vaults → vault picker; selected vault in URL (?vault=0x...).
- * 5. ?vault= in URL without a wallet → read-only mode with banner.
  *
  * Single source of truth for wallet state: wagmi useAccount().status.
  * watchAccount re-runs vault list on account/chain change.
+ * When disconnected, the app always shows only the connect-wallet card —
+ * no vault data is shown without an active wallet connection.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -20,7 +21,7 @@ import {
 } from 'wagmi'
 import { watchAccount } from '@wagmi/core'
 import { decodeEventLog, type Log } from 'viem'
-import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, Eye, AlertCircle } from 'lucide-react'
+import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, AlertCircle } from 'lucide-react'
 import { VaultScreen } from './components/VaultScreen'
 import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
@@ -101,10 +102,12 @@ export default function App() {
   useEffect(() => {
     const unwatch = watchAccount(wagmiConfig, {
       onChange(newAccount) {
-        // Account changed or disconnected — reload vault list and clear storm
-        if (newAccount.address !== address) {
+        if (newAccount.status === 'disconnected') {
+          // Clear vault immediately — no data without a wallet
+          setSelectedVault(null)
           setStormResults([])
-          // Don't clear selectedVault — keep read-only view if URL has one
+        } else if (newAccount.address !== address) {
+          setStormResults([])
           void refetchVaults()
         }
       },
@@ -117,13 +120,6 @@ export default function App() {
     if (selectedVault) return
     if (vaultList.length > 0) selectVault(vaultList[vaultList.length - 1])
   }, [vaultList.length]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // When user disconnects, deselect vault ONLY if there's no ?vault= in the URL
-  useEffect(() => {
-    if (isDisconnected && !getVaultFromUrl()) {
-      setSelectedVault(null)
-    }
-  }, [isDisconnected])
 
   const selectVault = useCallback((addr: `0x${string}`) => {
     setSelectedVault(addr)
@@ -217,15 +213,8 @@ export default function App() {
     </div>
   )
 
-  const screens = (readOnly: boolean) => (
+  const screens = () => (
     <>
-      {readOnly && (
-        <div className="mb-4 flex items-center gap-2 rounded-2xl px-4 py-3 text-xs"
-          style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.18)', color: 'var(--ink-2)' }}>
-          <Eye className="size-4 shrink-0" style={{ color: '#6366f1' }} />
-          <span><span className="font-semibold">Viewing read-only.</span> Connect your wallet to deposit, pay, or withdraw.</span>
-        </div>
-      )}
       <div style={{ display: tab === 'vault' ? 'block' : 'none' }}>
         <VaultScreen
           vaultAddress={selectedVault!}
@@ -234,18 +223,12 @@ export default function App() {
         />
       </div>
       <div style={{ display: tab === 'pay' ? 'block' : 'none' }}>
-        {readOnly
-          ? <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-              <Send className="size-8 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
-              <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Connect wallet to pay</p>
-            </div>
-          : <PayScreen
-              vaultAddress={selectedVault!}
-              onActivity={triggerActivity}
-              onStormResults={handleStormResults}
-              onTxConfirmed={refetchVaultStats}
-            />
-        }
+        <PayScreen
+          vaultAddress={selectedVault!}
+          onActivity={triggerActivity}
+          onStormResults={handleStormResults}
+          onTxConfirmed={refetchVaultStats}
+        />
       </div>
       <div style={{ display: tab === 'activity' ? 'block' : 'none' }}>
         <ActivityScreen vaultAddress={selectedVault!} refreshTrigger={activityTrigger} stormResults={stormResults} />
@@ -385,24 +368,17 @@ export default function App() {
         {isConnected && !wrongChain && selectedVault && (
           <>
             {tabBar}
-            {screens(false)}
+            {screens()}
           </>
         )}
 
-        {/* Read-only mode — ?vault= in URL but wallet disconnected (or different chain) */}
-        {!isConnected && !isReconnecting && selectedVault && (
-          <>
-            {tabBar}
-            {screens(true)}
-          </>
-        )}
-
-        {/* No wallet, no vault URL — prompt to connect */}
-        {!isConnected && !isReconnecting && !selectedVault && (
+        {/* Disconnected — always show connect-wallet card, never vault data */}
+        {!isConnected && !isReconnecting && (
           <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
             <Shield className="size-10 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
             <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>Connect your wallet</p>
-            <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>Connect to create or manage your vault, or open a vault link to view it read-only.</p>
+            <p className="mt-1 text-xs mb-5" style={{ color: 'var(--muted)' }}>Connect to create or manage your vault.</p>
+            <ConnectKitButton />
           </div>
         )}
 
