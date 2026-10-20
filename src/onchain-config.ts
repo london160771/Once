@@ -1,23 +1,27 @@
 /**
  * Once Payout Vault — chain configuration.
- * Change ACTIVE_CHAIN to switch between testnet and mainnet.
- * Never import chain IDs, RPC URLs, or USDC addresses from memory — read them here.
- *
- * VAULT_ADDRESS is NOT hardcoded here. Each user deploys their own vault through
- * the factory. The active vault address comes from the URL (?vault=0x...) or
- * is chosen from the factory's getVaults() result after connecting.
+ * Network is read from VITE_NETWORK env var ('mainnet' | 'testnet'), defaulting to 'mainnet'.
+ * Never hardcode chain IDs, RPC URLs, factory addresses, or USDC addresses in source.
  */
 
 import { arcTestnet, arc } from 'viem/chains'
 
 // ─── Network switch ────────────────────────────────────────────────────────────
-//  'testnet'  →  Arc Testnet  (chain ID 5042002)
-//  'mainnet'  →  Arc Mainnet  (chain ID 5042)   — requires explicit user approval
-export const NETWORK = 'testnet' as 'testnet' | 'mainnet'
+// Set VITE_NETWORK=testnet in .env to switch to testnet.
+// Default is mainnet.
+export const NETWORK: 'testnet' | 'mainnet' =
+  (import.meta.env.VITE_NETWORK === 'testnet' ? 'testnet' : 'mainnet') as 'testnet' | 'mainnet'
 
 // ─── Chain objects ─────────────────────────────────────────────────────────────
 export const CHAIN = NETWORK === 'mainnet' ? arc : arcTestnet
-export const CHAIN_ID = CHAIN.id as number  // 5042002 on testnet
+export const CHAIN_ID = CHAIN.id as number  // 5042 on mainnet, 5042002 on testnet
+
+// ─── RPC endpoints ─────────────────────────────────────────────────────────────
+// Official Arc RPC endpoints — used in wagmi transport (wagmi-config.ts).
+export const RPC_URL =
+  NETWORK === 'mainnet'
+    ? 'https://rpc.mainnet.arc.io'
+    : 'https://rpc.testnet.arc.io'
 
 // ─── USDC (ERC-20, 6 decimals) ─────────────────────────────────────────────────
 // On Arc, USDC is the native gas token AND an ERC-20 at this fixed predeploy address.
@@ -26,16 +30,16 @@ export const USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as cons
 export const USDC_DECIMALS = 6
 
 // ─── Factory ───────────────────────────────────────────────────────────────────
-// Deployed on Arc Testnet. Update this when redeploying.
-// No vault address is hardcoded — vaults are created per user via createVault().
-export const FACTORY_ADDRESS = '0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7' as `0x${string}`
+// Per-network factory addresses. No vault address is hardcoded — vaults are
+// created per user via createVault().
+export const FACTORY_ADDRESS: `0x${string}` =
+  NETWORK === 'mainnet'
+    ? '0x006c1Ef4a55221173caac47C7ad9fed25A35562D'
+    : '0x9Bc81f3c411CB2EbFA1308e25f8c31A58772819C'
 
 // ─── Gas floor ─────────────────────────────────────────────────────────────────
-// Arc protocol enforces a minimum base fee. We use this as a floor when
-// building maxFeePerGas in getFeeParams (utils.ts).
-// Testnet: 20 gwei (documented Arc protocol floor).
-// Mainnet: we read eth_gasPrice at runtime and keep 20 as a lower bound only.
-export const MIN_BASE_FEE_GWEI = 20n  // bigint gwei
+// Arc protocol enforces a minimum base fee. Used as a floor in getFeeParams (utils.ts).
+export const MIN_BASE_FEE_GWEI = 20n  // bigint gwei — same on both networks
 
 // ─── Explorer ──────────────────────────────────────────────────────────────────
 export const EXPLORER_BASE =

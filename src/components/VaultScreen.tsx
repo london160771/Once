@@ -15,7 +15,7 @@ import {
   ArrowDownToLine, PackageCheck, ExternalLink, BadgeCheck, BadgeX,
 } from 'lucide-react'
 import { TokenUSDC } from '@web3icons/react'
-import { USDC_ADDRESS, CHAIN_ID, buildTxUrl } from '../onchain-config'
+import { USDC_ADDRESS, CHAIN_ID, NETWORK, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, parseUsdc, formatAddress, getFeeParams } from '../utils'
 import { toast } from 'sonner'
@@ -107,7 +107,7 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
 
   const handleFund = () => {
     if (!isConnected) return
-    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID }); return }
     const raw = parseUsdc(depositAmount)
     if (!raw) return
     setPendingFundAmount(raw)
@@ -140,7 +140,7 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
 
   const handleSetBudget = () => {
     if (!isConnected) return
-    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID }); return }
     setBudget({ address: vaultAddress, abi: VAULT_ABI, functionName: 'setBudget', args: [parseUsdc(budgetAmount)] })
   }
 
@@ -159,7 +159,7 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
 
   const handleWithdraw = () => {
     if (!isConnected) return
-    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID }); return }
     withdraw({ address: vaultAddress, abi: VAULT_ABI, functionName: 'withdrawUnspent' })
   }
 
@@ -178,7 +178,7 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
 
   const handleCloseOut = async () => {
     if (!isConnected || !walletClient || !publicClient) return
-    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID }); return }
     if (totalPaid === undefined) { toast.error('Vault data not loaded yet'); return }
     setIsClosingOut(true); setCloseOutHashes({})
     try {
@@ -285,7 +285,7 @@ export function VaultScreen({ vaultAddress }: { vaultAddress: `0x${string}` }) {
         <button onClick={handleCloseOut} disabled={isClosingOut || !isConnected || wrongChain || (!isOwner && isConnected && !wrongChain)}
           className="w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
           style={{ background: 'var(--danger)' }}>
-          {!isConnected ? 'Connect Wallet' : wrongChain ? 'Switch to Arc Testnet' : !isOwner ? 'Owner only'
+          {!isConnected ? 'Connect Wallet' : wrongChain ? `Switch to Arc ${NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'}` : !isOwner ? 'Owner only'
             : isClosingOut ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />Closing out…</span>
             : 'Close Out Vault'}
         </button>
@@ -333,7 +333,7 @@ function ActionButton({ onClick, loading, disabled, label, loadingLabel, isConne
     <button onClick={onClick} disabled={disabled}
       className="mt-4 w-full rounded-2xl py-3.5 text-sm font-semibold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
       style={{ background: 'var(--accent)' }}>
-      {!isConnected ? 'Connect Wallet' : wrongChain ? 'Switch to Arc Testnet' : ownerOnly ? 'Owner only'
+      {!isConnected ? 'Connect Wallet' : wrongChain ? `Switch to Arc ${NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'}` : ownerOnly ? 'Owner only'
         : loading ? <span className="flex items-center justify-center gap-2"><Loader2 className="size-4 animate-spin" />{loadingLabel}</span>
         : label}
     </button>

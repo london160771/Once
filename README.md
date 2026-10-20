@@ -6,11 +6,22 @@
 
 ## Deployed Contracts
 
-| Contract | Network | Address | Explorer |
-|---|---|---|---|
-| OncePayoutVaultFactory | Arc Testnet | `0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7` | [View on ArcScan](https://explorer.testnet.arc.io/address/0xb297e7c8c2ef32a9edd8841876b0df5a8cec67b7) |
+| Contract | Network | Address | Deploy Tx | Explorer |
+|---|---|---|---|---|
+| OncePayoutVaultFactory | Arc Mainnet | `0x006c1Ef4a55221173caac47C7ad9fed25A35562D` | [`0x07995c3d…`](https://explorer.arc.io/tx/0x07995c3db8729ab945f9b3f2bdffc36b0f3c705737b86ec7cd7e6d1193c25e6a) | [View](https://explorer.arc.io/address/0x006c1Ef4a55221173caac47C7ad9fed25A35562D) |
+| OncePayoutVaultFactory | Arc Testnet | `0x9Bc81f3c411CB2EbFA1308e25f8c31A58772819C` | — | [View](https://explorer.testnet.arc.io/address/0x9Bc81f3c411CB2EbFA1308e25f8c31A58772819C) |
 
 Each user deploys their own `OncePayoutVault` through the factory. No vault address is hardcoded — call `createVault()` or connect your wallet in the app.
+
+> **Note:** OKX Wallet cannot estimate fees for `createVault()` on Arc. Use Rabby or MetaMask to create a vault.
+
+---
+
+## Built with Arc Studio
+
+The contracts, tests, and frontend were built with [Arc Studio](https://studio.arc.io/app/473c2c20-a2e7-42c3-931d-0e6c1e923d01) — Circle's onchain app builder.
+
+The Arc Mainnet factory was deployed by the owner using Remix + Rabby with the same compiler settings as the contracts: Solidity 0.8.28, optimizer 200 runs, `paris` EVM target.
 
 ---
 
@@ -75,64 +86,64 @@ Three screens, accessible via tab bar:
 |---|---|
 | **Vault** | Connect wallet, deposit USDC, set budget, view balance / budget / totalPaid / remaining |
 | **Pay** | Enter recipient and amount, auto-generate an `intentId`, send a payment. "Retry Storm" fires the same intent 5× and shows which succeeded and which were refused with their reason code |
-| **Activity** | Live feed of `Paid` events from the last 5,000 blocks, each with an explorer link |
+| **Activity** | Onchain history from the Arc explorer API — pay() calls (PAID and REFUSED), plus neutral rows for deposit/budget/withdraw transactions |
+
+---
+
+## Network configuration
+
+The active network is controlled by the `VITE_NETWORK` environment variable.
+
+| Value | Network | Chain ID | Factory |
+|---|---|---|---|
+| `mainnet` (default) | Arc Mainnet | 5042 | `0x006c1Ef4a55221173caac47C7ad9fed25A35562D` |
+| `testnet` | Arc Testnet | 5042002 | `0x9Bc81f3c411CB2EbFA1308e25f8c31A58772819C` |
+
+Set in `.env`:
+
+```
+VITE_NETWORK=testnet
+```
+
+A **MAINNET** or **TESTNET** badge is shown in the app header so the active network is always visible.
 
 ---
 
 ## Verifying contracts on the explorer
 
-Both contracts are verified on Arc Testnet (Blockscout). Rerun these commands after any redeployment — they work on mainnet too by changing `--chain-id` and `--verifier-url`.
+Both contracts are verified on the Arc explorer (Blockscout). Rerun these commands after any redeployment.
 
 ```bash
-# Verify OncePayoutVaultFactory (takes address _usdc in constructor)
+# Verify OncePayoutVaultFactory
 forge verify-contract <FACTORY_ADDRESS> \
   contracts/OncePayoutVaultFactory.sol:OncePayoutVaultFactory \
-  --chain-id 5042002 \
+  --chain-id <5042 or 5042002> \
   --verifier blockscout \
-  --verifier-url https://explorer.testnet.arc.io/api/ \
+  --verifier-url <https://explorer.arc.io/api/ or https://explorer.testnet.arc.io/api/> \
   --constructor-args $(cast abi-encode "constructor(address)" \
       0x3600000000000000000000000000000000000000) \
   --watch
 
-# Verify OncePayoutVault (pass the usdc + owner constructor args)
+# Verify OncePayoutVault
 forge verify-contract <VAULT_ADDRESS> \
   contracts/OncePayoutVault.sol:OncePayoutVault \
-  --chain-id 5042002 \
+  --chain-id <5042 or 5042002> \
   --verifier blockscout \
-  --verifier-url https://explorer.testnet.arc.io/api/ \
+  --verifier-url <https://explorer.arc.io/api/ or https://explorer.testnet.arc.io/api/> \
   --constructor-args $(cast abi-encode "constructor(address,address)" \
       0x3600000000000000000000000000000000000000 \
       <OWNER_ADDRESS>) \
   --watch
-
-# For Arc mainnet, change:
-#   --chain-id 5042
-#   --verifier-url https://explorer.arc.io/api/
 ```
-
----
-
-## Chain configuration
-
-All chain settings live in **`src/onchain-config.ts`**.
-
-To switch to Arc mainnet:
-
-```typescript
-// src/onchain-config.ts
-export const NETWORK = 'mainnet' as 'testnet' | 'mainnet'
-```
-
-Then redeploy the factory on Arc mainnet, update `FACTORY_ADDRESS`, verify both contracts using the commands above (with mainnet chain-id and verifier-url), and rebuild.
 
 ---
 
 ## Tests
 
-30 Foundry tests cover every requirement:
+42 Foundry tests (30 vault + 12 factory) cover every requirement:
 
-```
-forge test --match-path contracts/test/OncePayoutVault.t.sol -v
+```bash
+forge test -v
 ```
 
 Tests include:
@@ -154,8 +165,11 @@ Tests include:
 # Install
 bun install
 
-# Dev server
+# Dev server (mainnet by default)
 bun run dev
+
+# Dev server on testnet
+VITE_NETWORK=testnet bun run dev
 
 # Type check
 bunx tsc --noEmit

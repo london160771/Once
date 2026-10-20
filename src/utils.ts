@@ -1,5 +1,5 @@
 import type { PublicClient, Abi } from 'viem'
-import { BaseError, decodeErrorResult, decodeFunctionData } from 'viem'
+import { BaseError, decodeErrorResult, decodeFunctionData, erc20Abi } from 'viem'
 import { MIN_BASE_FEE_GWEI } from './onchain-config'
 import { USDC_DECIMALS } from './onchain-config'
 
@@ -53,9 +53,15 @@ export async function decodeOnchainRevert(
     return (d && d.startsWith('0x') && d.length > 2) ? d as `0x${string}` : null
   }
 
-  // Helper: decode an ABI error from raw 0x data
+  // Helper: decode an ABI error from raw 0x data — tries vault ABI then ERC-20 ABI
   function decodeAbiError(data: `0x${string}`): string | null {
-    try { return decodeErrorResult({ abi, data }).errorName } catch { return null }
+    try { return decodeErrorResult({ abi, data }).errorName } catch { /* fall */ }
+    // ERC-20 errors (e.g. ERC20InsufficientBalance from the USDC transfer)
+    try {
+      const name = decodeErrorResult({ abi: erc20Abi, data }).errorName
+      if (name === 'ERC20InsufficientBalance') return 'INSUFFICIENT_VAULT_BALANCE'
+      return name
+    } catch { return null }
   }
 
   // Helper: scan error message for known names

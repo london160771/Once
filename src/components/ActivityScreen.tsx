@@ -1,23 +1,35 @@
 /**
- * ActivityScreen — shows both successful pay() calls and failed/reverted ones
- * for a specific vault address.
+ * ActivityScreen — shows pay() calls (paid and refused) for a selected vault.
  *
  * Primary source: Blockscout API /api/v2/addresses/{vault}/transactions
+ *   - No `limit` param (Blockscout v2 rejects it); follows next_page_params up to 3 pages.
+ *   - Filters to pay() calls only: decoded_input.method_call starts with "pay(" OR
+ *     tx input starts with pay() selector 0x1836304c.
+ *   - Non-pay txs (fund, setBudget, withdrawUnspent) shown as neutral info rows.
+ *   - Promise.allSettled per row: one failed decode only marks that row REVERTED.
  * Fallback: in-memory storm results (optimistic, deduped by hash).
  */
 
 import { useEffect, useState, useCallback } from 'react'
 import { usePublicClient } from 'wagmi'
 import { decodeEventLog, type Log } from 'viem'
-import { CheckCircle2, XCircle, ExternalLink, RefreshCw, Loader2, MinusCircle, AlertCircle } from 'lucide-react'
+import {
+  CheckCircle2, XCircle, ExternalLink, RefreshCw, Loader2,
+  MinusCircle, AlertCircle, ArrowDownToLine, Target, Banknote,
+} from 'lucide-react'
 import { CHAIN_ID, EXPLORER_BASE, buildTxUrl } from '../onchain-config'
 import { VAULT_ABI } from '../vault-abi'
 import { formatUsdc, formatAddress, formatTimestamp, decodeOnchainRevert } from '../utils'
 import type { AttemptResult } from './PayScreen'
 
+// pay() function selector (first 4 bytes of keccak256("pay(bytes32,address,uint256,uint64)"))
+const PAY_SELECTOR = '0x1836304c'
+
+type TxKind = 'PAID' | 'REFUSED' | 'CANCELLED' | 'NOT_SENT' | 'DEPOSIT' | 'BUDGET_SET' | 'WITHDRAW' | 'OTHER'
+
 interface TxItem {
   txHash: string
-  status: 'PAID' | 'REFUSED' | 'CANCELLED' | 'NOT_SENT'
+  kind: TxKind
   reason?: string
   amount?: bigint
   to?: string
@@ -33,11 +45,29 @@ interface BlockscoutTx {
   block: number
   method: string | null
   revert_reason?: string | null
+  raw_input?: string
+  decoded_input?: { method_call?: string } | null
 }
 
 interface BlockscoutResponse {
   items: BlockscoutTx[]
-  next_page_params?: unknown
+  next_page_params?: Record<string, string | number> | null
+}
+
+/** Returns true if a tx is a pay() call based on selector or decoded method name. */
+function isPayCall(tx: BlockscoutTx): boolean {
+  if (tx.decoded_input?.method_call?.startsWith('pay(')) return true
+  const input = tx.raw_input ?? ''
+  return input.toLowerCase().startsWith(PAY_SELECTOR)
+}
+
+/** Map method name to a neutral kind label. */
+function neutralKind(tx: BlockscoutTx): TxKind {
+  const m = (tx.decoded_input?.method_call ?? tx.method ?? '').toLowerCase()
+  if (m.startsWith('fund')) return 'DEPOSIT'
+  if (m.startsWith('setbudget') || m.startsWith('set_budget')) return 'BUDGET_SET'
+  if (m.startsWith('withdrawunspent') || m.startsWith('withdraw')) return 'WITHDRAW'
+  return 'OTHER'
 }
 
 export function ActivityScreen({
@@ -55,7 +85,6 @@ export function ActivityScreen({
   const [apiError, setApiError] = useState<string | null>(null)
   const [lastFetched, setLastFetched] = useState<number | null>(null)
 
-  // Delegates to the shared decodeOnchainRevert helper in utils.ts
   const replayRevert = useCallback(async (
     hash: string,
     apiReason?: string | null,
@@ -84,25 +113,66 @@ export function ActivityScreen({
   const fetchFromApi = useCallback(async () => {
     setLoading(true); setApiError(null)
     try {
-      const url = `${EXPLORER_BASE}/api/v2/addresses/${vaultAddress}/transactions?filter=to&limit=50`
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json: BlockscoutResponse = await res.json()
+      // Paginate: up to 3 pages, no `limit` param (Blockscout v2 rejects it)
+      let allTxs: BlockscoutTx[] = []
+      let nextParams: Record<string, string | number> | null = null
+      for (let page = 0; page < 3; page++) {
+        const qs = new URLSearchParams({ filter: 'to' })
+        if (nextParams) {
+          Object.entries(nextParams).forEach(([k, v]) => qs.set(k, String(v)))
+        }
+        const url = `${EXPLORER_BASE}/api/v2/addresses/${vaultAddress}/transactions?${qs}`
+        const res = await fetch(url)
+        if (!res.ok) {
+          const body = await res.text().catch(() => '')
+          console.error(`Blockscout fetch failed: HTTP ${res.status}`, body)
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const json: BlockscoutResponse = await res.json()
+        allTxs = allTxs.concat(json.items ?? [])
+        nextParams = json.next_page_params ?? null
+        if (!nextParams) break
+      }
 
-      const enriched = await Promise.all(json.items.map(async (tx): Promise<TxItem> => {
+      // Enrich each tx with Promise.allSettled so one failed decode doesn't abort the list
+      const settledResults = await Promise.allSettled(allTxs.map(async (tx): Promise<TxItem> => {
         const blockNumber = BigInt(tx.block)
         const ts = tx.timestamp ? Math.floor(new Date(tx.timestamp).getTime() / 1000) : undefined
+
+        if (!isPayCall(tx)) {
+          // Non-pay tx — show as neutral info row, never as PAID
+          return {
+            txHash: tx.hash,
+            kind: neutralKind(tx),
+            timestamp: ts,
+            blockNumber,
+            fromChain: true,
+          }
+        }
+
         if (tx.status === 'ok') {
           const { amount, to } = await decodePaidLog(tx.hash)
-          return { txHash: tx.hash, status: 'PAID', amount, to, timestamp: ts, blockNumber, fromChain: true }
+          return { txHash: tx.hash, kind: 'PAID', amount, to, timestamp: ts, blockNumber, fromChain: true }
         } else {
-          // Shared helper handles: explorer reason → eth_call replay → paidIntents fallback → REVERTED
           const reason = await replayRevert(tx.hash, tx.revert_reason)
-          return { txHash: tx.hash, status: 'REFUSED', reason, timestamp: ts, blockNumber, fromChain: true }
+          return { txHash: tx.hash, kind: 'REFUSED', reason, timestamp: ts, blockNumber, fromChain: true }
         }
       }))
 
-      setChainItems(enriched); setLastFetched(Date.now())
+      const enriched: TxItem[] = settledResults.map((r, i) => {
+        if (r.status === 'fulfilled') return r.value
+        // Decode failed for this row — mark as REVERTED with the tx hash we do have
+        return {
+          txHash: allTxs[i]!.hash,
+          kind: 'REFUSED' as TxKind,
+          reason: 'REVERTED',
+          blockNumber: BigInt(allTxs[i]!.block),
+          fromChain: true,
+        }
+      })
+
+      setChainItems(enriched)
+      setLastFetched(Date.now())
     } catch (err) {
       console.error('Blockscout fetch failed:', err)
       setApiError('Could not load history from the explorer. The API may be temporarily unavailable.')
@@ -111,7 +181,16 @@ export function ActivityScreen({
 
   useEffect(() => { fetchFromApi() }, [refreshTrigger, fetchFromApi])
 
-  const inMemoryItems: TxItem[] = stormResults.filter(r => r.txHash).map(r => ({ txHash: r.txHash!, status: r.status, reason: r.reason, blockNumber: r.blockNumber, fromChain: false }))
+  // Merge in-memory storm results (only paid/refused rows with a real hash)
+  const inMemoryItems: TxItem[] = stormResults
+    .filter(r => r.txHash && (r.status === 'PAID' || r.status === 'REFUSED'))
+    .map(r => ({
+      txHash: r.txHash!,
+      kind: r.status as 'PAID' | 'REFUSED',
+      reason: r.reason,
+      blockNumber: r.blockNumber,
+      fromChain: false,
+    }))
   const chainHashes = new Set(chainItems.map(i => i.txHash.toLowerCase()))
   const uniqueInMemory = inMemoryItems.filter(i => !chainHashes.has(i.txHash.toLowerCase()))
   const allItems = [...chainItems, ...uniqueInMemory].sort((a, b) => {
@@ -123,7 +202,9 @@ export function ActivityScreen({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-xs" style={{ color: 'var(--muted)' }}>{loading ? 'Loading…' : lastFetched ? `Updated ${new Date(lastFetched).toLocaleTimeString()}` : 'Fetching…'}</p>
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>
+          {loading ? 'Loading…' : lastFetched ? `Updated ${new Date(lastFetched).toLocaleTimeString()}` : 'Fetching…'}
+        </p>
         <button onClick={fetchFromApi} disabled={loading}
           className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition hover:opacity-80 disabled:opacity-40"
           style={{ background: 'var(--surface-muted)', color: 'var(--ink)' }}>
@@ -154,7 +235,7 @@ export function ActivityScreen({
         <div className="rounded-2xl p-8 text-center" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
           <CheckCircle2 className="size-8 mx-auto mb-3" style={{ color: 'var(--border-strong)' }} />
           <p className="text-sm font-medium" style={{ color: 'var(--ink-2)' }}>No activity yet</p>
-          <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>Paid and refused pay() calls will appear here after a page refresh.</p>
+          <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>Paid and refused pay() calls will appear here after a refresh.</p>
         </div>
       )}
 
@@ -162,23 +243,45 @@ export function ActivityScreen({
 
       <div className="rounded-2xl p-4 text-xs" style={{ background: 'var(--surface-muted)', color: 'var(--muted)' }}>
         <p className="font-semibold mb-1" style={{ color: 'var(--ink-2)' }}>Data source</p>
-        <p>Fetched from the <a href={`${EXPLORER_BASE}/address/${vaultAddress}`} target="_blank" rel="noopener noreferrer" className="mono font-medium underline" style={{ color: 'var(--accent-hover)' }}>Arc explorer API</a> — both successful and reverted pay() calls.</p>
+        <p>Fetched from the{' '}
+          <a href={`${EXPLORER_BASE}/address/${vaultAddress}`} target="_blank" rel="noopener noreferrer"
+            className="mono font-medium underline" style={{ color: 'var(--accent-hover)' }}>Arc explorer API</a>
+          {' '}— pay() calls only. Deposit, budget, and withdraw transactions are shown as info rows.
+        </p>
       </div>
     </div>
   )
 }
 
 function TxCard({ item }: { item: TxItem }) {
-  const isPaid = item.status === 'PAID', isNotSent = item.status === 'NOT_SENT' || item.status === 'CANCELLED'
-  const bg = isPaid ? 'rgba(255,255,255,0.72)' : isNotSent ? 'rgba(245,245,248,0.8)' : 'rgba(254,242,242,0.7)'
-  const border = isPaid ? 'rgba(26,128,71,0.18)' : isNotSent ? 'var(--border)' : 'rgba(186,43,76,0.18)'
-  const Icon = isPaid ? CheckCircle2 : isNotSent ? MinusCircle : XCircle
-  const iconBg = isPaid ? 'rgba(26,128,71,0.1)' : isNotSent ? 'rgba(107,101,128,0.08)' : 'rgba(186,43,76,0.1)'
-  const iconColor = isPaid ? 'var(--success)' : isNotSent ? 'var(--muted)' : 'var(--danger)'
-  const statusLabel = isPaid ? 'PAID' : item.reason ?? item.status
-  const statusColor = isPaid ? 'var(--success)' : isNotSent ? 'var(--muted)' : 'var(--danger)'
+  const isPaid     = item.kind === 'PAID'
+  const isRefused  = item.kind === 'REFUSED'
+  const isNeutral  = !isPaid && !isRefused
+
+  const bg     = isPaid ? 'rgba(255,255,255,0.72)' : isRefused ? 'rgba(254,242,242,0.7)' : 'rgba(245,245,248,0.8)'
+  const border  = isPaid ? 'rgba(26,128,71,0.18)' : isRefused ? 'rgba(186,43,76,0.18)' : 'var(--border)'
+  const iconBg  = isPaid ? 'rgba(26,128,71,0.1)' : isRefused ? 'rgba(186,43,76,0.1)' : 'rgba(107,101,128,0.08)'
+  const iconColor = isPaid ? 'var(--success)' : isRefused ? 'var(--danger)' : 'var(--muted)'
+  const statusColor = isPaid ? 'var(--success)' : isRefused ? 'var(--danger)' : 'var(--muted)'
+
+  const Icon =
+    isPaid ? CheckCircle2 :
+    isRefused ? XCircle :
+    item.kind === 'DEPOSIT' ? ArrowDownToLine :
+    item.kind === 'BUDGET_SET' ? Target :
+    item.kind === 'WITHDRAW' ? Banknote :
+    MinusCircle
+
+  const kindLabel: Record<TxKind, string> = {
+    PAID: 'PAID', REFUSED: item.reason ?? 'REFUSED', CANCELLED: 'CANCELLED',
+    NOT_SENT: 'NOT SENT', DEPOSIT: 'DEPOSIT', BUDGET_SET: 'BUDGET SET',
+    WITHDRAW: 'WITHDRAW', OTHER: 'OTHER',
+  }
+  const statusLabel = kindLabel[item.kind]
+
   return (
-    <div className="rounded-3xl p-4" style={{ background: bg, backdropFilter: 'blur(20px) saturate(180%)', WebkitBackdropFilter: 'blur(20px) saturate(180%)', border: `1px solid ${border}` }}>
+    <div className="rounded-3xl p-4"
+      style={{ background: bg, backdropFilter: 'blur(20px) saturate(180%)', WebkitBackdropFilter: 'blur(20px) saturate(180%)', border: `1px solid ${border}` }}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-xl" style={{ background: iconBg }}>
@@ -186,19 +289,33 @@ function TxCard({ item }: { item: TxItem }) {
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              {item.amount !== undefined && <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>{formatUsdc(item.amount)} USDC</span>}
+              {item.amount !== undefined && (
+                <span className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>{formatUsdc(item.amount)} USDC</span>
+              )}
               <span className="mono rounded-md px-1.5 py-0.5 text-xs font-semibold"
-                style={{ background: isPaid ? 'rgba(26,128,71,0.08)' : 'rgba(186,43,76,0.08)', color: statusColor }}>{statusLabel}</span>
+                style={{
+                  background: isPaid ? 'rgba(26,128,71,0.08)' : isRefused ? 'rgba(186,43,76,0.08)' : 'rgba(107,101,128,0.08)',
+                  color: statusColor,
+                }}>{statusLabel}</span>
             </div>
-            {item.to && <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>To: <span className="mono">{formatAddress(item.to)}</span></p>}
-            {item.blockNumber !== undefined && <p className="mt-0.5 mono text-xs" style={{ color: 'var(--subtle)' }}>block {item.blockNumber.toString()}</p>}
+            {item.to && (
+              <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
+                To: <span className="mono">{formatAddress(item.to)}</span>
+              </p>
+            )}
+            {item.blockNumber !== undefined && (
+              <p className="mt-0.5 mono text-xs" style={{ color: 'var(--subtle)' }}>block {item.blockNumber.toString()}</p>
+            )}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
-          {item.timestamp !== undefined && <span className="text-xs" style={{ color: 'var(--muted)' }}>{formatTimestamp(item.timestamp)}</span>}
+          {item.timestamp !== undefined && (
+            <span className="text-xs" style={{ color: 'var(--muted)' }}>{formatTimestamp(item.timestamp)}</span>
+          )}
           {item.txHash && item.txHash !== '0x' && (
             <a href={buildTxUrl(item.txHash)} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs font-medium" style={{ color: isPaid ? 'var(--accent-hover)' : 'var(--danger)' }}>
+              className="flex items-center gap-1 text-xs font-medium"
+              style={{ color: isPaid ? 'var(--accent-hover)' : isRefused ? 'var(--danger)' : 'var(--muted)' }}>
               Explorer <ExternalLink className="size-3" />
             </a>
           )}

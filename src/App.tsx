@@ -24,7 +24,7 @@ import { Shield, Send, Activity, Plus, ChevronDown, Loader2, ExternalLink, Eye }
 import { VaultScreen } from './components/VaultScreen'
 import { PayScreen, type AttemptResult } from './components/PayScreen'
 import { ActivityScreen } from './components/ActivityScreen'
-import { FACTORY_ADDRESS, CHAIN_ID, buildAddressUrl } from './onchain-config'
+import { FACTORY_ADDRESS, CHAIN_ID, NETWORK, buildAddressUrl } from './onchain-config'
 import { FACTORY_ABI } from './factory-abi'
 import { formatAddress, getFeeParams } from './utils'
 import { toast } from 'sonner'
@@ -131,7 +131,7 @@ export default function App() {
 
   const handleCreateVault = async () => {
     if (!walletClient || !publicClient) return
-    if (wrongChain) { switchChain({ chainId: CHAIN_ID as 5042002 }); return }
+    if (wrongChain) { switchChain({ chainId: CHAIN_ID }); return }
     setIsCreating(true)
     try {
       let feeParams
@@ -246,7 +246,15 @@ export default function App() {
         {/* Header */}
         <header className="mb-6 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="display text-2xl font-bold" style={{ color: 'var(--ink)', letterSpacing: '-0.03em' }}>Once</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="display text-2xl font-bold" style={{ color: 'var(--ink)', letterSpacing: '-0.03em' }}>Once</h1>
+              <span className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                style={NETWORK === 'mainnet'
+                  ? { background: 'rgba(26,128,71,0.1)', color: 'var(--success)', border: '1px solid rgba(26,128,71,0.2)' }
+                  : { background: 'rgba(99,102,241,0.1)', color: '#6366f1', border: '1px solid rgba(99,102,241,0.25)' }}>
+                {NETWORK === 'mainnet' ? 'MAINNET' : 'TESTNET'}
+              </span>
+            </div>
             {selectedVault ? (
               <a href={buildAddressUrl(selectedVault)} target="_blank" rel="noopener noreferrer"
                 className="mono flex items-center gap-1 text-xs" style={{ color: 'var(--muted)' }}>
@@ -281,7 +289,7 @@ export default function App() {
         {/* Wrong chain banner */}
         {wrongChain && (
           <div className="mb-5 rounded-2xl px-4 py-3 text-center text-sm" style={{ background: 'rgba(186,43,76,0.07)', border: '1px solid rgba(186,43,76,0.2)', color: 'var(--danger)' }}>
-            Switch to Arc Testnet to continue
+            Switch to Arc {NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'} to continue
           </div>
         )}
 
