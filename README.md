@@ -4,6 +4,35 @@
 
 ---
 
+## Why Once
+
+Payout code retries. Networks time out, workers crash, and AI agents repeat actions. Each retry can send the same payment again. A team with a 1.00 USDC budget can pay one contributor 0.40 three times and lose 1.20 before anyone notices.
+
+Once moves the safety rule into the contract: every payout has an intent ID, each intent settles at most once, and the total paid can never pass the approved budget. Refused attempts are recorded onchain with clear reason codes (DUPLICATE_INTENT, OVER_BUDGET, INTENT_EXPIRED, NOT_PAYER).
+
+## Vision
+
+Make "pay exactly once" a default building block for USDC payments on Arc. Any app, script or AI agent that sends money should be able to retry safely without building its own duplicate-protection logic. Arc's USDC gas and sub-second final settlement make "paid or not" instant and certain, which is what safe retries need.
+
+## Who can use it
+
+- **Teams and DAOs** paying contributors, payroll or bounties from a script.
+- **AI agent builders** whose agents pay for services and must never pay twice.
+- **Payroll, bounty and grant platforms** that send many payouts and need safe retries (for example, a grant program paying approved builders).
+- **Marketplaces and gig platforms** releasing payments to sellers or freelancers.
+- **Payout and remittance services** that batch USDC transfers and must stay within an approved budget.
+
+## Roadmap
+
+- **Payer keys for agents and bots:** a payer that can pay within the budget but can never withdraw.
+- **Recurring payouts:** scheduled payroll and vesting on top of the same once-only guarantee.
+- **Batch payouts:** many intents in one transaction, each still settled at most once.
+- **Cross-chain payouts:** send USDC to other chains through Circle CCTP / Gateway.
+- **Developer SDK:** a small TypeScript package so any app can create intents and pay through Once.
+- **Independent security audit** before handling larger amounts.
+
+---
+
 ## Deployed Contracts
 
 | Contract | Network | Address | Deploy Tx | Explorer |
